@@ -31,8 +31,8 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 # Global MAVLink connection and state
 mav_connection = None
 mav_lock = threading.Lock()
-mav_connect_string = 'udpin:0.0.0.0:14550'
-mav_status = {'connected': False, 'connecting': False, 'error': None, 'connection_string': 'udpin:0.0.0.0:14550'}
+mav_connect_string = 'udpci:192.168.144.12:19856'
+mav_status = {'connected': False, 'connecting': False, 'error': None, 'connection_string': 'udpci:192.168.144.12:19856'}
 mav_stop_event = threading.Event()
 
 telemetry = {
@@ -205,7 +205,7 @@ def api_connect():
     global mav_connect_string, mav_stop_event
     data = request.get_json() or {}
     ip = data.get('ip', '').strip()
-    port = data.get('port', '14550')
+    port = data.get('port', '19856')
     conn_type = data.get('type', 'udpci')  # udpci, udpin, tcp
 
     if not ip:

@@ -385,9 +385,9 @@
       <option value="udpin">UDP Server (listen)</option>
       <option value="serial">Serial / USB</option>
     </select>
-    <input id="connIp" type="text" placeholder="IP adresas (pvz. 192.168.144.10)" value="192.168.144.10"
+    <input id="connIp" type="text" placeholder="IP adresas (pvz. 192.168.144.12)" value="192.168.144.12"
       style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;"/>
-    <input id="connPort" type="text" placeholder="Portas / Device (pvz. 14550 arba /dev/ttyUSB0)" value="14550"
+    <input id="connPort" type="text" placeholder="Portas / Device (pvz. 19856 arba /dev/ttyUSB0)" value="19856"
       style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;"/>
     <select id="connBaud" style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;display:none;">
       <option value="57600">57600</option>
@@ -473,12 +473,12 @@ function onConnTypeChange() {
   } else if (type === 'udpin') {
     ipEl.style.display = 'none';
     portEl.placeholder = 'Portas (pvz. 14550)';
-    portEl.value = '14550';
+    portEl.value = '19856';
     baudEl.style.display = 'none';
   } else {
     ipEl.style.display = 'block';
     portEl.placeholder = 'Portas (pvz. 14550)';
-    portEl.value = '14550';
+    portEl.value = '19856';
     baudEl.style.display = 'none';
   }
 }
