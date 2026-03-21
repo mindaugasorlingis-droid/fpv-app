@@ -294,9 +294,112 @@ def emit_telemetry_loop():
     while True:
         try:
             socketio.emit('telemetry', {**telemetry, 'mav_status': mav_status})
+            socketio.emit('guide_status', {'active': guide_active, 'mode': 'GUIDED' if guide_active else 'OFF'})
         except Exception as e:
             pass
         time.sleep(0.2)
+
+
+# ─── GUIDE MODE LOGIC ────────────────────────────────────────────────────────
+
+def guidance_loop():
+    """Background guidance loop: reads tracker_bbox, sends MAVLink attitude commands."""
+    global guide_active
+    import math
+
+    GUIDED_MODE_NUM = MODE_NAME_TO_NUM.get('GUIDED', 15)
+    last_guided_send = 0.0      # time of last GUIDED mode request
+    tracker_lost_time = None    # when we noticed tracker was gone
+
+    print("GUIDE: guidance loop started")
+
+    while guide_active:
+        now = time.time()
+
+        with mav_lock:
+            conn = mav_connection
+
+        if not conn:
+            time.sleep(0.1)
+            continue
+
+        # Send GUIDED mode request at 1 Hz to keep it active
+        if now - last_guided_send >= 1.0:
+            try:
+                conn.set_mode(GUIDED_MODE_NUM)
+            except Exception:
+                pass
+            last_guided_send = now
+
+        # Read current tracker bbox
+        with tracker_lock:
+            bbox = tracker_bbox
+
+        # Check for tracker lost
+        if bbox is None or not bbox.get('ok', True):
+            if tracker_lost_time is None:
+                tracker_lost_time = now
+            elif now - tracker_lost_time >= 2.0:
+                print("GUIDE: tracker lost for 2s — stopping guidance")
+                guide_active = False
+                break
+            time.sleep(0.1)
+            continue
+        else:
+            tracker_lost_time = None
+
+        # Compute azimuth/elevation errors
+        cx = bbox['x'] + bbox['w'] / 2.0
+        cy = bbox['y'] + bbox['h'] / 2.0
+        az_error = (cx - 0.5) * CAM_FOV_H   # + = right
+        el_error = (0.5 - cy) * CAM_FOV_V   # + = up
+
+        # Dead zone — on axis, no command needed
+        if abs(az_error) < 1.0 and abs(el_error) < 1.0:
+            time.sleep(0.1)
+            continue
+
+        # Proportional navigation
+        Kp_roll  = 0.02   # rad per degree of azimuth error
+        Kp_pitch = 0.015  # rad per degree of elevation error
+
+        roll_cmd  = math.radians(az_error * Kp_roll * (180.0 / math.pi))
+        pitch_cmd = math.radians(el_error * Kp_pitch * (180.0 / math.pi))
+
+        # Clamp to safe angles
+        roll_cmd  = max(-0.5, min(0.5, roll_cmd))
+        pitch_cmd = max(-0.3, min(0.3, pitch_cmd))
+
+        # Build quaternion from roll/pitch/yaw=0
+        # q = [w, x, y, z]
+        cr = math.cos(roll_cmd  / 2.0)
+        sr = math.sin(roll_cmd  / 2.0)
+        cp = math.cos(pitch_cmd / 2.0)
+        sp = math.sin(pitch_cmd / 2.0)
+        q = [cr * cp, sr * cp, cr * sp, -sr * sp]
+
+        # type_mask: 0b00000111 = ignore body rates
+        type_mask = 0b00000111
+
+        try:
+            conn.mav.set_attitude_target_send(
+                int((now % 1000) * 1000),   # time_boot_ms
+                conn.target_system,
+                conn.target_component,
+                type_mask,
+                [float(q[0]), float(q[1]), float(q[2]), float(q[3])],
+                0.0,   # roll rate
+                0.0,   # pitch rate
+                0.0,   # yaw rate
+                0.5    # thrust (neutral)
+            )
+        except Exception as e:
+            print(f"GUIDE: MAVLink send error: {e}")
+
+        time.sleep(0.1)  # 10 Hz guidance loop
+
+    guide_active = False
+    print("GUIDE: guidance loop stopped")
 
 
 # ─── REST API ────────────────────────────────────────────────────────────────
@@ -488,6 +591,12 @@ tracker = None
 tracker_lock = threading.Lock()
 tracker_bbox = None   # (x, y, w, h) normalized 0..1
 tracker_active = False
+
+# ── GUIDE MODE ────────────────────────────────────────────────────────────────
+guide_active = False
+guide_thread = None
+CAM_FOV_H = 90.0   # Horizontal FOV degrees
+CAM_FOV_V = 67.0   # Vertical FOV degrees
 
 
 class OpticalFlowTracker:
@@ -877,6 +986,44 @@ def api_tracker_detect_toggle():
     else:
         yolo_detect_enabled = not yolo_detect_enabled
     return jsonify({'ok': True, 'enabled': yolo_detect_enabled})
+
+
+@app.route('/api/guide/start', methods=['POST'])
+def api_guide_start():
+    """Enable GUIDE mode — start ArduPilot terminal guidance."""
+    global guide_active, guide_thread, CAM_FOV_H, CAM_FOV_V
+    data = request.get_json() or {}
+    if 'fov_h' in data:
+        CAM_FOV_H = float(data['fov_h'])
+    if 'fov_v' in data:
+        CAM_FOV_V = float(data['fov_v'])
+
+    if not tracker_active:
+        return jsonify({'error': 'Tracker not active — start tracker first'}), 400
+
+    if guide_active:
+        return jsonify({'ok': True, 'active': True, 'mode': 'GUIDED'})
+
+    guide_active = True
+    guide_thread = threading.Thread(target=guidance_loop, daemon=True)
+    guide_thread.start()
+    socketio.emit('guide_status', {'active': True, 'mode': 'GUIDED'})
+    return jsonify({'ok': True, 'active': True, 'mode': 'GUIDED'})
+
+
+@app.route('/api/guide/stop', methods=['POST'])
+def api_guide_stop():
+    """Disable GUIDE mode."""
+    global guide_active
+    guide_active = False
+    socketio.emit('guide_status', {'active': False, 'mode': 'OFF'})
+    return jsonify({'ok': True, 'active': False, 'mode': 'OFF'})
+
+
+@app.route('/api/guide/status', methods=['GET'])
+def api_guide_status():
+    """Return current GUIDE mode status."""
+    return jsonify({'active': guide_active, 'mode': 'GUIDED' if guide_active else 'OFF'})
 
 
 if __name__ == '__main__':

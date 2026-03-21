@@ -21,10 +21,10 @@ jobs:
         python-version: '3.11'
 
     - name: Install dependencies
-      run: pip install pymavlink flask flask-socketio opencv-python pyserial pyinstaller
+      run: pip install pymavlink flask flask-socketio opencv-python pyserial pyinstaller numpy
 
     - name: Build EXE
-      run: pyinstaller --onefile --name "FPV-GroundStation" --add-data "static;static" --add-data "mediamtx.yml;." --hidden-import=engineio.async_drivers.threading --hidden-import=flask_socketio --hidden-import=socketio --hidden-import=pymavlink --hidden-import=pymavlink.dialects --hidden-import=pymavlink.dialects.v20 --hidden-import=pymavlink.dialects.v20.ardupilotmega --collect-all flask_socketio --collect-all pymavlink --collect-all cv2 app.py
+      run: pyinstaller --onefile --name "FPV-GroundStation" --add-data "static;static" --add-data "mediamtx.yml;." --add-data "backbone.onnx;." --add-data "neckhead.onnx;." --hidden-import=engineio.async_drivers.threading --hidden-import=flask_socketio --hidden-import=socketio --hidden-import=pymavlink --hidden-import=pymavlink.dialects --hidden-import=pymavlink.dialects.v20 --hidden-import=pymavlink.dialects.v20.ardupilotmega --collect-all flask_socketio --collect-all pymavlink --collect-all cv2 app.py
 
     - name: Create package
       shell: powershell

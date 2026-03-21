@@ -3,4 +3,6 @@ flask
 flask-socketio
 opencv-python
 pyserial
-ultralytics
+numpy
+# ultralytics is optional (large) — install manually if YOLO detection needed
+# pip install ultralytics

@@ -106,8 +106,32 @@
     transform: translateY(-50%);
     background: transparent;
     padding: 0;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
   }
   #horizonCanvas { display: block; }
+
+  #guidance-panel {
+    display: none;
+    flex-direction: column;
+    gap: 5px;
+    font-family: 'Courier New', monospace;
+    font-size: 12px;
+    background: rgba(0,0,0,0.6);
+    border: 1px solid rgba(190,214,0,0.4);
+    border-radius: 6px;
+    padding: 8px 10px;
+    min-width: 130px;
+  }
+  #guidance-panel.active { display: flex; }
+  .gd-row { display: flex; justify-content: space-between; gap: 8px; }
+  .gd-label { color: #6a7a7b; font-size: 10px; text-transform: uppercase; }
+  .gd-val { color: #BED600; font-weight: bold; text-align: right; }
+  .gd-val.warn { color: #FFD700; }
+  .gd-val.alert { color: #FF6B6B; }
+  .gd-divider { border: none; border-top: 1px solid rgba(190,214,0,0.2); margin: 2px 0; }
 
   #osd-armed {
     top: 52px; left: 50%; transform: translateX(-50%);
@@ -149,6 +173,38 @@
   #osd-flightinfo .fi-label { color: #888; font-size: 0.62rem; display: block; letter-spacing: 0.05em; }
   #osd-flightinfo .fi-val { color: var(--green); font-weight: bold; font-size: 0.85rem; }
   #compassCanvas { display: block; }
+
+  /* ── GUIDE BUTTON ── */
+  @keyframes guide-pulse {
+    0%, 100% { border-color: #FF4444; box-shadow: 0 0 8px rgba(255,68,68,0.6); }
+    50% { border-color: #FF8C00; box-shadow: 0 0 16px rgba(255,140,0,0.8); }
+  }
+  #guide-btn {
+    position: fixed;
+    z-index: 50;
+    pointer-events: all;
+    background: rgba(0,0,0,0.65);
+    border: 2px solid #27ae60;
+    color: #27ae60;
+    border-radius: 6px;
+    padding: 7px 18px;
+    font-size: 14px;
+    font-family: 'Courier New', monospace;
+    font-weight: bold;
+    letter-spacing: 0.1em;
+    cursor: pointer;
+    transition: color 0.2s, border-color 0.2s;
+    left: 50%;
+    transform: translateX(-50%);
+    top: calc(50% - 90px);
+  }
+  #guide-btn:hover { opacity: 0.85; }
+  #guide-btn.active {
+    animation: guide-pulse 1s ease-in-out infinite;
+    color: #FF8C00;
+    border-color: #FF4444;
+    background: rgba(0,0,0,0.75);
+  }
 
   /* ── CONTROLS PANEL ── */
   #menuBtn {
@@ -278,9 +334,23 @@
     <div id="bat-bar-wrap"><div id="bat-bar" style="width:0%"></div></div>
   </div>
 
-  <!-- CENTER LEFT: Artificial Horizon -->
+  <!-- GUIDE BUTTON (above horizon, centered) -->
+  <button id="guide-btn" onclick="toggleGuide()">◎ GUIDE</button>
+
+  <!-- CENTER LEFT: Artificial Horizon + Guidance -->
   <div id="osd-horizon" class="osd-el">
     <canvas id="horizonCanvas" width="130" height="130"></canvas>
+    <div id="guidance-panel">
+      <div class="gd-row"><span class="gd-label">AZIMUTH</span><span class="gd-val" id="gd-az">—</span></div>
+      <div class="gd-row"><span class="gd-label">ELEVATION</span><span class="gd-val" id="gd-el">—</span></div>
+      <hr class="gd-divider">
+      <div class="gd-row"><span class="gd-label">LOS AZ</span><span class="gd-val" id="gd-los-az">—</span></div>
+      <div class="gd-row"><span class="gd-label">LOS EL</span><span class="gd-val" id="gd-los-el">—</span></div>
+      <hr class="gd-divider">
+      <div class="gd-row"><span class="gd-label">CLOSURE</span><span class="gd-val" id="gd-clo">—</span></div>
+      <hr class="gd-divider">
+      <div class="gd-row"><span class="gd-label">TRACKING</span><span class="gd-val" id="gd-status" style="color:#27ae60;">ACTIVE</span></div>
+    </div>
   </div>
 
   <!-- CENTER: Armed/Disarmed -->
@@ -390,6 +460,16 @@
   <h3>Actions</h3>
   <button class="btn btn-toggle" id="btnGps" onclick="apiDisableGps()">GPS DISABLE</button>
   <button class="btn btn-action" onclick="apiRestartMission()">↺ RESTART MISSION</button>
+
+  <h3>Kamera FOV</h3>
+  <div style="display:flex;gap:6px;align-items:center;font-size:12px;">
+    <label style="color:#888;white-space:nowrap;">H°</label>
+    <input id="fovH" type="number" value="90" min="10" max="180" onchange="CAM_FOV_H=+this.value"
+      style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:4px;padding:4px 6px;width:60px;font-size:12px;"/>
+    <label style="color:#888;white-space:nowrap;">V°</label>
+    <input id="fovV" type="number" value="67" min="10" max="120" onchange="CAM_FOV_V=+this.value"
+      style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:4px;padding:4px 6px;width:60px;font-size:12px;"/>
+  </div>
 
   <div id="connStatus">
     <span id="connDot"></span>
@@ -1215,15 +1295,28 @@ let drawStart = null;
 let drawRect = null;
 let trackerActive = false;
 let trackerBox = null;
+
+// ── Terminal Guidance ───────────────────────────────────────────────
+let CAM_FOV_H = 90.0;  // SIYI R1M horizontal FOV degrees
+let CAM_FOV_V = 67.0;  // SIYI R1M vertical FOV degrees
+let guidanceHistory = [];  // for LOS rate
+let guidanceEnabled = true;
+let guidanceData = {az: 0, el: 0, losRateAz: 0, losRateEl: 0, closureRate: 0, bboxSizePrev: null};
 let videoNativeW = 0, videoNativeH = 0;
 
 function resizeTrackCanvas() {
   const vw = trackCanvas.parentElement;
-  trackCanvas.width = vw.offsetWidth;
-  trackCanvas.height = vw.offsetHeight;
+  const w = vw.offsetWidth || window.innerWidth;
+  const h = vw.offsetHeight || window.innerHeight;
+  if (w > 0 && h > 0) {
+    trackCanvas.width = w;
+    trackCanvas.height = h;
+  }
 }
 window.addEventListener('resize', resizeTrackCanvas);
-resizeTrackCanvas();
+// Delay init to ensure DOM is ready
+setTimeout(resizeTrackCanvas, 100);
+window.addEventListener('load', resizeTrackCanvas);
 
 socket.on('video_dims', d => { videoNativeW = d.w; videoNativeH = d.h; });
 socket.on('video_status', d => { if (d.w) { videoNativeW = d.w; videoNativeH = d.h; } });
@@ -1238,10 +1331,10 @@ socket.on('connect', () => {
 
 // Get position relative to actual video content (letterbox aware)
 function getVideoRect() {
-  const img = document.getElementById('videoEl');
   const cr = trackCanvas.getBoundingClientRect();
+  const cw = trackCanvas.width || cr.width || window.innerWidth;
+  const ch = trackCanvas.height || cr.height || window.innerHeight;
   if (videoNativeW && videoNativeH) {
-    const cw = cr.width, ch = cr.height;
     const vRatio = videoNativeW / videoNativeH;
     const cRatio = cw / ch;
     let vw, vh, vx, vy;
@@ -1254,7 +1347,8 @@ function getVideoRect() {
     }
     return {x: vx, y: vy, w: vw, h: vh};
   }
-  return {x: 0, y: 0, w: cr.width, h: cr.height};
+  // Fallback — use full canvas
+  return {x: 0, y: 0, w: cw, h: ch};
 }
 
 function getCanvasPos(e) {
@@ -1316,6 +1410,14 @@ async function stopTracker() {
   trackerActive = false;
   trackerBox = null;
   drawRect = null;
+  guidanceHistory = [];
+  const panel = document.getElementById('guidance-panel');
+  if (panel) panel.classList.remove('active');
+  // Also stop guide mode if active
+  if (guideActive) {
+    await fetch('/api/guide/stop', {method: 'POST'}).catch(() => {});
+    updateGuideBtn(false);
+  }
   renderTrackCanvas();
 }
 
@@ -1339,13 +1441,20 @@ socket.on('tracker_box', d => {
     return;
   }
   // Update box position from server
+  const prev = trackerBox;
   trackerBox = {x: d.x, y: d.y, w: d.w, h: d.h};
+  computeGuidance(prev, trackerBox);
   renderTrackCanvas();
 });
 
 function renderTrackCanvas() {
   const W = trackCanvas.width, H = trackCanvas.height;
   trackCtx.clearRect(0, 0, W, H);
+
+  // Always draw center crosshair when tracker is active
+  if (trackerActive) {
+    drawGuidanceLine(trackCtx, trackerBox, W, H);
+  }
 
   const box = trackerBox || drawRect;
   if (!box) return;
@@ -1412,6 +1521,252 @@ window.addEventListener('resize', () => {
   resizeTrackCanvas();
   renderTrackCanvas();
 });
+
+// Double-click to stop tracker
+trackCanvas.addEventListener('dblclick', e => {
+  if (trackerActive) {
+    stopTracker();
+    e.preventDefault();
+  }
+});
+
+// ── GUIDE MODE API ────────────────────────────────────────────────────────
+let guideActive = false;
+
+function updateGuideBtn(active) {
+  guideActive = active;
+  const btn = document.getElementById('guide-btn');
+  if (!btn) return;
+  if (active) {
+    btn.textContent = '⚡ GUIDING';
+    btn.classList.add('active');
+  } else {
+    btn.textContent = '◎ GUIDE';
+    btn.classList.remove('active');
+  }
+}
+
+socket.on('guide_status', function(d) {
+  updateGuideBtn(d.active);
+});
+
+async function toggleGuide() {
+  if (!guideActive) {
+    // Check tracker is active
+    if (!trackerActive) {
+      alert("Pirma aktyvuok tracker'į");
+      return;
+    }
+    try {
+      const r = await fetch('/api/guide/start', {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({fov_h: CAM_FOV_H, fov_v: CAM_FOV_V})
+      });
+      const d = await r.json();
+      if (d.ok) {
+        updateGuideBtn(true);
+      } else {
+        alert('GUIDE klaida: ' + (d.error || 'Nepavyko'));
+      }
+    } catch(e) { alert('Request failed: ' + e.message); }
+  } else {
+    try {
+      await fetch('/api/guide/stop', {method: 'POST'});
+      updateGuideBtn(false);
+    } catch(e) { alert('Request failed: ' + e.message); }
+  }
+}
+
+// ── TERMINAL GUIDANCE ─────────────────────────────────────────────────────
+function computeGuidance(prev, cur) {
+  if (!cur) return;
+  const now = Date.now();
+
+  // Object center normalized (0=left/top, 1=right/bottom)
+  const cx = cur.x + cur.w / 2;
+  const cy = cur.y + cur.h / 2;
+
+  // Azimuth/Elevation error from frame center (degrees)
+  const az = (cx - 0.5) * CAM_FOV_H;   // + = right
+  const el = (0.5 - cy) * CAM_FOV_V;   // + = up
+
+  // LOS rate (deg/s) — from history
+  guidanceHistory.push({az, el, t: now});
+  if (guidanceHistory.length > 20) guidanceHistory.shift();
+
+  let losRateAz = 0, losRateEl = 0;
+  if (guidanceHistory.length >= 3) {
+    const oldest = guidanceHistory[0];
+    const dt = (now - oldest.t) / 1000;
+    if (dt > 0.05) {
+      losRateAz = (az - oldest.az) / dt;
+      losRateEl = (el - oldest.el) / dt;
+    }
+  }
+
+  // Closure rate — bbox size change (% per second = approach rate proxy)
+  const bboxArea = cur.w * cur.h;
+  let closureRate = 0;
+  if (guidanceData.bboxSizePrev && guidanceData.bboxSizePrev.t) {
+    const dt = (now - guidanceData.bboxSizePrev.t) / 1000;
+    if (dt > 0.1) {
+      closureRate = (bboxArea - guidanceData.bboxSizePrev.area) / dt * 100;
+    }
+  }
+  guidanceData.bboxSizePrev = {area: bboxArea, t: now};
+
+  // Lead angle (proportional navigation preview)
+  const N = 3; // nav constant
+  const leadAz = -N * losRateAz * 0.3;
+  const leadEl = -N * losRateEl * 0.3;
+
+  guidanceData = {...guidanceData, az, el, losRateAz, losRateEl, closureRate, leadAz, leadEl, cx, cy};
+  updateGuidancePanel();
+}
+
+function drawGuidanceLine(ctx, box, W, H) {
+  if (!box) return;
+  const vr = getVideoRect();
+
+  // Frame center
+  const fcx = vr.x + vr.w / 2;
+  const fcy = vr.y + vr.h / 2;
+
+  // Object center
+  const ocx = vr.x + (box.x + box.w / 2) * vr.w;
+  const ocy = vr.y + (box.y + box.h / 2) * vr.h;
+
+  const dist = Math.sqrt((ocx-fcx)**2 + (ocy-fcy)**2);
+  if (dist < 5) return;
+
+  // ── LOS line (dashed) ──
+  ctx.save();
+  ctx.setLineDash([6, 4]);
+  ctx.strokeStyle = 'rgba(190,214,0,0.7)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(fcx, fcy);
+  ctx.lineTo(ocx, ocy);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // ── Center crosshair ──
+  ctx.strokeStyle = 'rgba(190,214,0,0.5)';
+  ctx.lineWidth = 1;
+  const cs = 12;
+  ctx.beginPath(); ctx.moveTo(fcx-cs, fcy); ctx.lineTo(fcx+cs, fcy); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(fcx, fcy-cs); ctx.lineTo(fcx, fcy+cs); ctx.stroke();
+  ctx.beginPath(); ctx.arc(fcx, fcy, 18, 0, Math.PI*2); ctx.stroke();
+
+  // ── Error vector arrow ──
+  if (dist > 20) {
+    const angle = Math.atan2(ocy - fcy, ocx - fcx);
+    const arrowLen = Math.min(dist * 0.6, 80);
+    const ax = fcx + Math.cos(angle) * arrowLen;
+    const ay = fcy + Math.sin(angle) * arrowLen;
+    ctx.strokeStyle = '#FF6B6B';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(fcx, fcy); ctx.lineTo(ax, ay); ctx.stroke();
+    // Arrowhead
+    const ah = 8;
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(ax - ah*Math.cos(angle-0.4), ay - ah*Math.sin(angle-0.4));
+    ctx.lineTo(ax - ah*Math.cos(angle+0.4), ay - ah*Math.sin(angle+0.4));
+    ctx.closePath();
+    ctx.fillStyle = '#FF6B6B';
+    ctx.fill();
+  }
+
+  // ── Guidance data panel ──
+  const d = guidanceData;
+  const az = d.az ? d.az.toFixed(1) : '0.0';
+  const el = d.el ? d.el.toFixed(1) : '0.0';
+  const losA = d.losRateAz ? d.losRateAz.toFixed(1) : '0.0';
+  const losE = d.losRateEl ? d.losRateEl.toFixed(1) : '0.0';
+  const clos = d.closureRate ? (d.closureRate > 0 ? '+' : '') + d.closureRate.toFixed(1) : '0.0';
+
+  const px = ocx + 14, py = ocy - 14;
+  const lines = [
+    `AZ ${az > 0 ? 'R' : 'L'} ${Math.abs(az)}°`,
+    `EL ${el > 0 ? 'U' : 'D'} ${Math.abs(el)}°`,
+    `LOS ${losA}°/s · ${losE}°/s`,
+    `CLO ${clos}%/s`,
+  ];
+  ctx.font = 'bold 11px Courier New';
+  const lineH = 15;
+  const bw = 120, bh = lines.length * lineH + 8;
+  // Keep panel in frame
+  let px2 = px, py2 = py;
+  if (px2 + bw > W) px2 = ocx - bw - 14;
+  if (py2 - 4 < 0) py2 = 4;
+
+  ctx.fillStyle = 'rgba(0,0,0,0.65)';
+  ctx.fillRect(px2 - 4, py2 - 4, bw, bh);
+  ctx.strokeStyle = '#BED600';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(px2 - 4, py2 - 4, bw, bh);
+
+  lines.forEach((line, i) => {
+    const isClose = i === 3 && d.closureRate > 5;
+    ctx.fillStyle = isClose ? '#FF6B6B' : '#BED600';
+    ctx.fillText(line, px2, py2 + i * lineH + lineH - 4);
+  });
+
+  ctx.restore();
+}
+
+function updateGuidancePanel() {
+  const panel = document.getElementById('guidance-panel');
+  if (!panel) return;
+
+  const active = trackerActive && trackerBox;
+  if (active) {
+    panel.classList.add('active');
+  } else {
+    panel.classList.remove('active');
+    return;
+  }
+
+  const d = guidanceData;
+  const fmt1 = v => (v >= 0 ? '+' : '') + v.toFixed(1);
+
+  // AZ
+  const azEl = document.getElementById('gd-az');
+  const azAbs = Math.abs(d.az).toFixed(1);
+  const azDir = d.az >= 0 ? 'R' : 'L';
+  azEl.textContent = azDir + ' ' + azAbs + '°';
+  azEl.className = 'gd-val' + (Math.abs(d.az) > 30 ? ' alert' : Math.abs(d.az) > 15 ? ' warn' : '');
+
+  // EL
+  const elEl = document.getElementById('gd-el');
+  const elAbs = Math.abs(d.el).toFixed(1);
+  const elDir = d.el >= 0 ? 'U' : 'D';
+  elEl.textContent = elDir + ' ' + elAbs + '°';
+  elEl.className = 'gd-val' + (Math.abs(d.el) > 20 ? ' alert' : Math.abs(d.el) > 10 ? ' warn' : '');
+
+  // LOS rates
+  document.getElementById('gd-los-az').textContent = fmt1(d.losRateAz) + '°/s';
+  document.getElementById('gd-los-el').textContent = fmt1(d.losRateEl) + '°/s';
+
+  // Closure
+  const cloEl = document.getElementById('gd-clo');
+  const clo = d.closureRate || 0;
+  cloEl.textContent = (clo >= 0 ? '+' : '') + clo.toFixed(1) + '%/s';
+  cloEl.className = 'gd-val' + (clo > 10 ? ' alert' : clo > 3 ? ' warn' : '');
+
+  // Status
+  const stEl = document.getElementById('gd-status');
+  if (Math.abs(d.az) < 2 && Math.abs(d.el) < 2) {
+    stEl.textContent = 'ON AXIS';
+    stEl.style.color = '#BED600';
+  } else {
+    stEl.textContent = 'TRACKING';
+    stEl.style.color = '#27ae60';
+  }
+}
+
+
 
 // ── AUTO DETECT (YOLO) ─────────────────────────────────────────────────────
 let autoDetectEnabled = false;

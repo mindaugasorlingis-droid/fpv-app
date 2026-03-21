@@ -8,3 +8,4 @@ mediamtx
 build/
 dist/
 *.spec
+test_video.mp4
