@@ -23,38 +23,21 @@ jobs:
     - name: Install dependencies
       run: pip install pymavlink flask flask-socketio opencv-python pyinstaller
 
-    - name: Build EXE with PyInstaller
-      run: >-
-        pyinstaller --onefile --name "FPV-GroundStation"
-        --add-data "static;static"
-        --add-data "mediamtx.yml;."
-        --hidden-import=engineio.async_drivers.threading
-        --hidden-import=flask_socketio
-        --hidden-import=socketio
-        --hidden-import=pymavlink
-        --hidden-import=pymavlink.dialects
-        --hidden-import=pymavlink.dialects.v20
-        --hidden-import=pymavlink.dialects.v20.ardupilotmega
-        --collect-all flask_socketio
-        --collect-all pymavlink
-        --collect-all cv2
-        app.py
+    - name: Build EXE
+      run: pyinstaller --onefile --name "FPV-GroundStation" --add-data "static;static" --add-data "mediamtx.yml;." --hidden-import=engineio.async_drivers.threading --hidden-import=flask_socketio --hidden-import=socketio --hidden-import=pymavlink --hidden-import=pymavlink.dialects --hidden-import=pymavlink.dialects.v20 --hidden-import=pymavlink.dialects.v20.ardupilotmega --collect-all flask_socketio --collect-all pymavlink --collect-all cv2 app.py
 
-    - name: Create launcher and package
+    - name: Create package
       shell: powershell
       run: |
-        $startBat = @'
-@echo off
-title FPV Ground Station
-cd /d "%~dp0"
-echo Starting FPV Ground Station...
-netsh advfirewall firewall add rule name="FPV-MAVLink" protocol=UDP dir=in localport=19856 action=allow >nul 2>&1
-netsh advfirewall firewall add rule name="FPV-HTTP" protocol=TCP dir=in localport=8086 action=allow >nul 2>&1
-start "" cmd /c "timeout /t 3 /nobreak >nul && start http://localhost:8086"
-FPV-GroundStation.exe
-pause
-'@
-        $startBat | Out-File -FilePath dist\START.bat -Encoding ASCII
+        $bat = '@echo off' + "`r`n"
+        $bat += 'title FPV Ground Station' + "`r`n"
+        $bat += 'cd /d "%~dp0"' + "`r`n"
+        $bat += 'netsh advfirewall firewall add rule name="FPV-MAVLink" protocol=UDP dir=in localport=19856 action=allow >nul 2>&1' + "`r`n"
+        $bat += 'netsh advfirewall firewall add rule name="FPV-HTTP" protocol=TCP dir=in localport=8086 action=allow >nul 2>&1' + "`r`n"
+        $bat += 'start "" cmd /c "timeout /t 3 /nobreak >nul && start http://localhost:8086"' + "`r`n"
+        $bat += 'FPV-GroundStation.exe' + "`r`n"
+        $bat += 'pause' + "`r`n"
+        Set-Content -Path dist\START.bat -Value $bat -Encoding ASCII
         Copy-Item mediamtx.yml dist\mediamtx.yml -ErrorAction SilentlyContinue
         Compress-Archive -Path dist\* -DestinationPath FPV-GroundStation-Windows.zip
 
@@ -74,7 +57,7 @@ pause
         body: |
           ## FPV Ground Station for Windows
           1. Extract ZIP
-          2. Run START.bat
+          2. Run START.bat (as Administrator)
           3. Browser opens at http://localhost:8086
         make_latest: true
       env:
