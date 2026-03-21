@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+planner.db
+*.log
+*.err
+mediamtx
+build/
+dist/
+*.spec

@@ -1,0 +1,4 @@
+pymavlink
+flask
+flask-socketio
+eventlet

@@ -1,0 +1,33 @@
+###############################################
+# mediamtx configuration for FPV app
+###############################################
+
+# General
+logLevel: warn
+logDestinations: [stdout]
+
+# RTSP
+rtsp: yes
+rtspAddress: :8554
+
+# RTMP
+rtmp: no
+
+# HLS
+hls: no
+
+# WebRTC
+webrtc: yes
+webrtcAddress: :8889
+
+# API
+api: yes
+apiAddress: :9997
+
+# Paths
+paths:
+  stream:
+    source: rtsp://192.168.144.25:8554/main.264
+    sourceOnDemand: yes
+    sourceOnDemandStartTimeout: 10s
+    sourceOnDemandCloseAfter: 0s

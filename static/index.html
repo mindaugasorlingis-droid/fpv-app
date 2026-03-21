@@ -1,0 +1,1134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FPV Ground Station</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+<style>
+  :root {
+    --green: #BED600;
+    --dark: #424B4C;
+    --bg: rgba(0,0,0,0.65);
+    --text: #ffffff;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #000;
+    color: var(--text);
+    font-family: 'Courier New', Courier, monospace;
+    overflow: hidden;
+    width: 100vw;
+    height: 100vh;
+  }
+
+  /* VIDEO LAYER */
+  #videoWrap {
+    position: fixed;
+    inset: 0;
+    background: #000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  #videoEl {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+
+  #noSignal {
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    color: #888;
+    font-size: 0.75rem;
+    letter-spacing: 0.2em;
+    background: rgba(0,0,0,0.5);
+    padding: 3px 10px;
+    border-radius: 4px;
+    z-index: 20;
+  }
+
+  /* OSD LAYER */
+  #osd {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 10;
+  }
+
+  .osd-el {
+    position: absolute;
+    background: var(--bg);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 0.78rem;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+  }
+
+  /* ── TOP ROW ── */
+  #osd-mode {
+    top: 12px; left: 14px;
+    font-size: 0.9rem;
+    font-weight: bold;
+    padding: 5px 12px;
+    border-radius: 5px;
+    color: #fff;
+  }
+
+  #osd-speeds {
+    top: 12px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 20px;
+    align-items: center;
+    font-size: 0.82rem;
+  }
+  #osd-speeds span { min-width: 70px; text-align: center; }
+  #osd-speeds .label { color: #aaa; font-size: 0.65rem; display: block; }
+  #osd-speeds .val { color: var(--green); font-size: 1rem; font-weight: bold; }
+
+  #osd-battery {
+    top: 12px; right: 14px;
+    text-align: right;
+    font-size: 0.82rem;
+  }
+  #bat-bar-wrap { width: 80px; height: 8px; background: #333; border-radius: 3px; margin-top: 4px; margin-left: auto; }
+  #bat-bar { height: 100%; border-radius: 3px; background: var(--green); transition: width 0.5s; }
+
+  /* ── MIDDLE ROW ── */
+  #osd-horizon {
+    top: 50%; left: 14px;
+    transform: translateY(-50%);
+    background: transparent;
+    padding: 0;
+  }
+  #horizonCanvas { display: block; }
+
+  #osd-armed {
+    top: 52px; left: 50%; transform: translateX(-50%);
+    font-size: 0.85rem;
+    font-weight: bold;
+    letter-spacing: 0.15em;
+    padding: 4px 16px;
+    border: 1.5px solid;
+    border-radius: 4px;
+  }
+
+  /* ── BOTTOM ROW ── */
+  #osd-gps {
+    bottom: 44px; left: 14px;
+    font-size: 0.75rem;
+  }
+  #osd-gps .fix { color: var(--green); font-weight: bold; }
+
+  #osd-coords {
+    bottom: 44px; left: 50%; transform: translateX(-50%);
+    font-size: 0.75rem;
+    color: #ddd;
+  }
+
+  #osd-compass {
+    bottom: 44px; right: 14px;
+    background: transparent;
+    padding: 0;
+  }
+
+  #osd-flightinfo {
+    bottom: 14px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 18px;
+    font-size: 0.75rem;
+    color: #ddd;
+    white-space: nowrap;
+  }
+  #osd-flightinfo .fi-item { text-align: center; }
+  #osd-flightinfo .fi-label { color: #888; font-size: 0.62rem; display: block; letter-spacing: 0.05em; }
+  #osd-flightinfo .fi-val { color: var(--green); font-weight: bold; font-size: 0.85rem; }
+  #compassCanvas { display: block; }
+
+  /* ── CONTROLS PANEL ── */
+  #menuBtn {
+    position: fixed;
+    top: 12px; right: 14px;
+    z-index: 100;
+    background: var(--bg);
+    border: none;
+    color: var(--text);
+    font-size: 1.4rem;
+    width: 40px; height: 40px;
+    border-radius: 5px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    pointer-events: all;
+    /* push left of battery */
+    right: calc(14px + 130px);
+  }
+
+  #panel {
+    position: fixed;
+    top: 0; right: -280px;
+    width: 270px; height: 100vh;
+    background: rgba(30,34,35,0.97);
+    border-left: 1px solid #333;
+    z-index: 50;
+    transition: right 0.25s ease;
+    display: flex;
+    flex-direction: column;
+    padding: 60px 16px 24px;
+    gap: 10px;
+    overflow-y: auto;
+  }
+  #panel.open { right: 0; }
+
+  #panel h3 {
+    color: var(--green);
+    font-size: 0.75rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+    margin-top: 8px;
+  }
+
+  .btn {
+    width: 100%;
+    padding: 10px;
+    border: none;
+    border-radius: 5px;
+    font-family: 'Courier New', monospace;
+    font-size: 0.85rem;
+    font-weight: bold;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    transition: opacity 0.15s;
+    color: #fff;
+    pointer-events: all;
+  }
+  .btn:hover { opacity: 0.85; }
+  .btn:active { opacity: 0.65; }
+
+  .btn-arm   { background: #27ae60; }
+  .btn-disarm { background: #c0392b; }
+  .btn-mode  { background: #2c3e50; border: 1px solid #555; font-size: 0.75rem; padding: 8px; }
+  .btn-mode.active { border-color: var(--green); color: var(--green); }
+  .btn-action { background: var(--dark); border: 1px solid #666; }
+  .btn-toggle { background: var(--dark); border: 1px solid #666; }
+  .btn-toggle.active { border-color: #e74c3c; color: #e74c3c; }
+
+  .mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+
+  #connStatus {
+    margin-top: auto;
+    padding: 8px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    text-align: center;
+    background: #1a1a1a;
+    border: 1px solid #333;
+  }
+  #connDot {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #555;
+    margin-right: 6px;
+    vertical-align: middle;
+  }
+  #connDot.connected { background: var(--green); }
+  #connDot.error { background: #e74c3c; }
+</style>
+</head>
+<body>
+
+<!-- VIDEO -->
+<div id="videoWrap">
+  <video id="videoEl" autoplay muted playsinline></video>
+  <div id="noSignal">NO VIDEO SIGNAL</div>
+</div>
+
+<!-- OSD -->
+<div id="osd">
+
+  <!-- TOP LEFT: Flight Mode -->
+  <div id="osd-mode" class="osd-el">UNKNOWN</div>
+
+  <!-- TOP CENTER: Speeds + Alt -->
+  <div id="osd-speeds" class="osd-el">
+    <span>
+      <span class="label">AIRSPD m/s</span>
+      <span class="val" id="airspeed">0.0</span>
+    </span>
+    <span>
+      <span class="label">ALT rel m</span>
+      <span class="val" id="altitude">0.0</span>
+    </span>
+    <span>
+      <span class="label">GNDSPD m/s</span>
+      <span class="val" id="groundspeed">0.0</span>
+    </span>
+  </div>
+
+  <!-- TOP RIGHT: Battery -->
+  <div id="osd-battery" class="osd-el">
+    <span id="batVoltage">--.- V</span>&nbsp;<span id="batPct">---%</span>
+    <div id="bat-bar-wrap"><div id="bat-bar" style="width:0%"></div></div>
+  </div>
+
+  <!-- CENTER LEFT: Artificial Horizon -->
+  <div id="osd-horizon" class="osd-el">
+    <canvas id="horizonCanvas" width="130" height="130"></canvas>
+  </div>
+
+  <!-- CENTER: Armed/Disarmed -->
+  <div id="osd-armed" class="osd-el">DISARMED</div>
+
+  <!-- CENTER SCREEN: Military HUD horizon -->
+  <canvas id="hudCanvas" style="
+    position:absolute;
+    top:50%; left:50%;
+    transform:translate(-50%,-50%);
+    pointer-events:none;
+    z-index:10;
+  " width="480" height="320"></canvas>
+
+  <!-- BOTTOM LEFT: GPS -->
+  <div id="osd-gps" class="osd-el">
+    <span class="fix" id="gpsFix">NO GPS</span>&nbsp;
+    <span id="gpsSats">0 SATS</span>
+  </div>
+
+  <!-- BOTTOM CENTER: Coordinates -->
+  <div id="osd-coords" class="osd-el">
+    <span id="latlon">0.000000° N &nbsp; 0.000000° E</span>
+  </div>
+
+  <!-- BOTTOM RIGHT: Compass -->
+  <div id="osd-compass" class="osd-el">
+    <canvas id="compassCanvas" width="130" height="80"></canvas>
+  </div>
+
+  <!-- BOTTOM CENTER: Flight info bar -->
+  <div id="osd-flightinfo" class="osd-el">
+    <div class="fi-item">
+      <span class="fi-label">SKRYDŽIO LAIKAS</span>
+      <span class="fi-val" id="fi-flighttime">00:00:00</span>
+    </div>
+    <div class="fi-item">
+      <span class="fi-label">AUKŠTIS</span>
+      <span class="fi-val" id="fi-maxalt">0 m</span>
+    </div>
+    <div class="fi-item">
+      <span class="fi-label">ATSTUMAS</span>
+      <span class="fi-val" id="fi-dist">0 m</span>
+    </div>
+    <div class="fi-item">
+      <span class="fi-label">IKI NAMŲ</span>
+      <span class="fi-val" id="fi-home">-- m</span>
+    </div>
+  </div>
+
+</div>
+
+<!-- VIDEO RECONNECT BUTTON -->
+<button id="videoreconnectBtn" onclick="reconnectVideo()" title="Perkrauti video signalą" style="
+  position:fixed; bottom:16px; left:16px;
+  z-index:50; pointer-events:all;
+  background:rgba(0,0,0,0.55);
+  border:1.5px solid #BED600;
+  color:#BED600;
+  border-radius:6px;
+  padding:7px 14px;
+  font-size:13px;
+  font-family:'Courier New',monospace;
+  font-weight:bold;
+  letter-spacing:0.08em;
+  cursor:pointer;
+  transition:all 0.15s;
+" onmouseenter="this.style.background='rgba(190,214,0,0.15)'"
+   onmouseleave="this.style.background='rgba(0,0,0,0.55)'">⟳ VIDEO</button>
+
+<!-- CONTROLS PANEL TOGGLE -->
+<button id="menuBtn" onclick="togglePanel()">&#9776;</button>
+
+<!-- CONTROLS PANEL -->
+<div id="panel">
+  <h3>Arm / Disarm</h3>
+  <button class="btn btn-arm" onclick="apiArm(true)">&#9654; ARM</button>
+  <button class="btn btn-disarm" onclick="apiArm(false)">&#9632; DISARM</button>
+
+  <h3>Flight Mode</h3>
+  <div class="mode-grid">
+    <button class="btn btn-mode" id="m-MANUAL" onclick="apiMode('MANUAL')">MANUAL</button>
+    <button class="btn btn-mode" id="m-FBWA" onclick="apiMode('FBWA')">FBWA</button>
+    <button class="btn btn-mode" id="m-AUTO" onclick="apiMode('AUTO')">AUTO</button>
+    <button class="btn btn-mode" id="m-TAKEOFF" onclick="apiMode('TAKEOFF')">TAKEOFF</button>
+    <button class="btn btn-mode" id="m-RTL" onclick="apiMode('RTL')" style="grid-column:1/-1">RTL</button>
+  </div>
+
+  <h3>Actions</h3>
+  <button class="btn btn-toggle" id="btnGps" onclick="apiDisableGps()">GPS DISABLE</button>
+  <button class="btn btn-action" onclick="apiRestartMission()">↺ RESTART MISSION</button>
+
+  <div id="connStatus">
+    <span id="connDot"></span>
+    <span id="connLabel">Connecting…</span>
+  </div>
+
+  <h3>MAVLink ryšys</h3>
+  <div style="display:flex;flex-direction:column;gap:6px;">
+    <select id="connType" onchange="onConnTypeChange()" style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;">
+      <option value="udpci">UDP Client (UDPCI)</option>
+      <option value="tcp">TCP</option>
+      <option value="udpin">UDP Server (listen)</option>
+      <option value="serial">Serial / USB</option>
+    </select>
+    <input id="connIp" type="text" placeholder="IP adresas (pvz. 192.168.144.10)" value="192.168.144.10"
+      style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;"/>
+    <input id="connPort" type="text" placeholder="Portas / Device (pvz. 14550 arba /dev/ttyUSB0)" value="14550"
+      style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;"/>
+    <select id="connBaud" style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;display:none;">
+      <option value="57600">57600</option>
+      <option value="115200" selected>115200</option>
+      <option value="230400">230400</option>
+      <option value="460800">460800</option>
+      <option value="921600">921600</option>
+    </select>
+    <div style="display:flex;gap:6px;">
+      <button class="btn btn-arm" style="flex:1;font-size:12px;" onclick="mavConnect()">⚡ Jungti</button>
+      <button class="btn btn-disarm" style="flex:1;font-size:12px;" onclick="mavDisconnect()">✕ Atjungti</button>
+    </div>
+    <div id="mavConnStr" style="font-size:10px;color:#888;word-break:break-all;margin-top:2px;"></div>
+  </div>
+</div>
+
+<script>
+// ── SOCKET.IO ──────────────────────────────────────────────────────────────
+const socket = io();
+let connected = false;
+let currentMode = '';
+let gpsDisabled = false;
+
+// ── Flight stats ──
+let flightStartTime = null;
+let flightTimerInterval = null;
+let homePosition = null;  // {lat, lon} set on first arm
+let lastPosition = null;  // {lat, lon}
+let totalDistance = 0;    // meters
+let maxAltitude = 0;
+let wasArmed = false;
+
+socket.on('connect', () => {
+  connected = true;
+  setConnStatus(true);
+});
+socket.on('disconnect', () => {
+  connected = false;
+  setConnStatus(false);
+});
+
+socket.on('telemetry', (d) => {
+  updateOSD(d);
+  updateMavStatus(d.mav_status);
+});
+
+function setConnStatus(ok) {
+  const dot = document.getElementById('connDot');
+  const lbl = document.getElementById('connLabel');
+  dot.className = ok ? 'connected' : 'error';
+  lbl.textContent = ok ? 'WebSocket: OK' : 'WebSocket: Atjungta';
+}
+
+function updateMavStatus(s) {
+  if (!s) return;
+  const dot = document.getElementById('connDot');
+  const lbl = document.getElementById('connLabel');
+  const strEl = document.getElementById('mavConnStr');
+  if (s.connected) {
+    dot.className = 'connected';
+    lbl.textContent = '✓ MAVLink prisijungta';
+  } else if (s.connecting) {
+    dot.className = '';
+    dot.style.background = '#f39c12';
+    lbl.textContent = '⏳ Jungiamasi…';
+  } else {
+    dot.className = 'error';
+    lbl.textContent = s.error ? '✕ ' + s.error : '✕ Atjungta';
+  }
+  if (strEl && s.connection_string) strEl.textContent = s.connection_string;
+}
+
+function onConnTypeChange() {
+  const type = document.getElementById('connType').value;
+  const ipEl = document.getElementById('connIp');
+  const portEl = document.getElementById('connPort');
+  const baudEl = document.getElementById('connBaud');
+  if (type === 'serial') {
+    ipEl.style.display = 'none';
+    portEl.placeholder = 'Device (pvz. /dev/ttyUSB0)';
+    portEl.value = '/dev/ttyUSB0';
+    baudEl.style.display = 'block';
+  } else if (type === 'udpin') {
+    ipEl.style.display = 'none';
+    portEl.placeholder = 'Portas (pvz. 14550)';
+    portEl.value = '14550';
+    baudEl.style.display = 'none';
+  } else {
+    ipEl.style.display = 'block';
+    portEl.placeholder = 'Portas (pvz. 14550)';
+    portEl.value = '14550';
+    baudEl.style.display = 'none';
+  }
+}
+
+async function mavConnect() {
+  const ip   = document.getElementById('connIp').value.trim();
+  const port = document.getElementById('connPort').value.trim() || '14550';
+  const type = document.getElementById('connType').value;
+  const baud = document.getElementById('connBaud').value;
+  if (!ip && type !== 'udpin' && type !== 'serial') { alert('Įveskite IP adresą'); return; }
+  const dot = document.getElementById('connDot');
+  dot.style.background = '#f39c12';
+  document.getElementById('connLabel').textContent = '⏳ Jungiamasi…';
+  try {
+    const r = await fetch('/api/connect', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ip, port, type, baud})
+    });
+    const d = await r.json();
+    if (d.ok) {
+      document.getElementById('mavConnStr').textContent = d.connection_string;
+    } else {
+      alert('Klaida: ' + (d.error || 'Nepavyko'));
+    }
+  } catch(e) { alert('Klaida: ' + e.message); }
+}
+
+async function mavDisconnect() {
+  await fetch('/api/disconnect', {method: 'POST'});
+  document.getElementById('connDot').className = 'error';
+  document.getElementById('connLabel').textContent = '✕ Atjungta';
+}
+
+// ── OSD UPDATE ─────────────────────────────────────────────────────────────
+function updateOSD(d) {
+  // Mode badge
+  const modeEl = document.getElementById('osd-mode');
+  modeEl.textContent = d.flight_mode;
+  const modeColors = {
+    MANUAL: '#888', FBWA: '#2980b9', AUTO: '#27ae60',
+    TAKEOFF: '#f39c12', RTL: '#c0392b'
+  };
+  modeEl.style.background = modeColors[d.flight_mode] || '#555';
+
+  // Speeds & Alt
+  document.getElementById('airspeed').textContent = d.airspeed.toFixed(1);
+  document.getElementById('altitude').textContent = d.altitude_rel.toFixed(1);
+  document.getElementById('groundspeed').textContent = d.groundspeed.toFixed(1);
+
+  // Battery
+  const pct = d.battery_remaining >= 0 ? d.battery_remaining : 0;
+  document.getElementById('batVoltage').textContent = d.battery_voltage.toFixed(2) + ' V';
+  document.getElementById('batPct').textContent = (d.battery_remaining >= 0 ? d.battery_remaining : '--') + '%';
+  const bar = document.getElementById('bat-bar');
+  bar.style.width = pct + '%';
+  bar.style.background = pct > 40 ? '#BED600' : pct > 20 ? '#f39c12' : '#e74c3c';
+
+  // Armed badge
+  const armedEl = document.getElementById('osd-armed');
+  armedEl.textContent = d.armed ? 'ARMED' : 'DISARMED';
+  armedEl.style.color = d.armed ? '#27ae60' : '#e74c3c';
+  armedEl.style.borderColor = d.armed ? '#27ae60' : '#e74c3c';
+
+  // GPS
+  const fixTypes = {0:'NO GPS',1:'NO FIX',2:'2D FIX',3:'3D FIX',4:'DGPS',5:'RTK FLT',6:'RTK FIX'};
+  document.getElementById('gpsFix').textContent = fixTypes[d.gps_fix] || 'NO GPS';
+  document.getElementById('gpsSats').textContent = d.gps_sats + ' SATS';
+
+  // Coordinates
+  const latStr = Math.abs(d.lat).toFixed(6) + '° ' + (d.lat >= 0 ? 'N' : 'S');
+  const lonStr = Math.abs(d.lon).toFixed(6) + '° ' + (d.lon >= 0 ? 'E' : 'W');
+  document.getElementById('latlon').textContent = latStr + '   ' + lonStr;
+
+  // Horizon
+  drawHorizon(d.roll, d.pitch);
+  drawHUD(d.roll, d.pitch);
+
+  // Compass
+  drawCompass(d.heading);
+
+  // Flight stats
+  updateFlightStats(d);
+
+  // Highlight active mode button
+  if (d.flight_mode !== currentMode) {
+    currentMode = d.flight_mode;
+    document.querySelectorAll('.btn-mode').forEach(b => b.classList.remove('active'));
+    const mBtn = document.getElementById('m-' + d.flight_mode);
+    if (mBtn) mBtn.classList.add('active');
+  }
+}
+
+// ── FLIGHT STATS ────────────────────────────────────────────────────────────
+function geoDistM(lat1, lon1, lat2, lon2) {
+  // Haversine, meters
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)*Math.sin(dLat/2) +
+    Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*
+    Math.sin(dLon/2)*Math.sin(dLon/2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function fmtDist(m) {
+  if (m >= 1000) return (m/1000).toFixed(2) + ' km';
+  return Math.round(m) + ' m';
+}
+
+function fmtTime(sec) {
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  return (h > 0 ? String(h).padStart(2,'0') + ':' : '') +
+    String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+}
+
+function updateFlightStats(d) {
+  const armed = d.armed;
+  const lat = d.lat, lon = d.lon;
+  const alt = d.altitude_rel || 0;
+  const hasGps = lat !== 0 || lon !== 0;
+
+  // Arm/disarm transitions
+  if (armed && !wasArmed) {
+    // Just armed — start flight
+    flightStartTime = Date.now();
+    totalDistance = 0;
+    maxAltitude = 0;
+    lastPosition = hasGps ? {lat, lon} : null;
+    if (!homePosition && hasGps) homePosition = {lat, lon};
+    if (!flightTimerInterval) {
+      flightTimerInterval = setInterval(() => {
+        if (flightStartTime) {
+          const elapsed = Math.floor((Date.now() - flightStartTime) / 1000);
+          document.getElementById('fi-flighttime').textContent = fmtTime(elapsed);
+        }
+      }, 1000);
+    }
+  } else if (!armed && wasArmed) {
+    // Just disarmed — stop timer
+    if (flightTimerInterval) { clearInterval(flightTimerInterval); flightTimerInterval = null; }
+  }
+  wasArmed = armed;
+
+  // Distance tracking (only when armed and GPS valid)
+  if (armed && hasGps && lastPosition) {
+    const d_m = geoDistM(lastPosition.lat, lastPosition.lon, lat, lon);
+    if (d_m > 1 && d_m < 500) { // filter noise & teleports
+      totalDistance += d_m;
+    }
+  }
+  if (hasGps) lastPosition = {lat, lon};
+
+  // Max altitude
+  if (armed && alt > maxAltitude) maxAltitude = alt;
+
+  // Home distance
+  let homeDist = '--';
+  if (homePosition && hasGps) {
+    homeDist = fmtDist(geoDistM(homePosition.lat, homePosition.lon, lat, lon));
+  }
+
+  document.getElementById('fi-maxalt').textContent = maxAltitude.toFixed(1) + ' m';
+  document.getElementById('fi-dist').textContent = fmtDist(totalDistance);
+  document.getElementById('fi-home').textContent = homeDist;
+  if (!armed && !flightStartTime) {
+    document.getElementById('fi-flighttime').textContent = '00:00:00';
+  }
+}
+
+// ── ARTIFICIAL HORIZON ─────────────────────────────────────────────────────
+const hCanvas = document.getElementById('horizonCanvas');
+const hCtx = hCanvas.getContext('2d');
+const HW = 130, HH = 130, CX = HW/2, CY = HH/2, R = 55;
+
+function drawHorizon(rollDeg, pitchDeg) {
+  hCtx.clearRect(0, 0, HW, HH);
+
+  const roll = rollDeg * Math.PI / 180;
+  const pitchOffset = pitchDeg * 1.5; // pixels per degree
+
+  // Clip to circle
+  hCtx.save();
+  hCtx.beginPath();
+  hCtx.arc(CX, CY, R, 0, Math.PI * 2);
+  hCtx.clip();
+
+  // Sky and ground split by pitch + roll
+  hCtx.save();
+  hCtx.translate(CX, CY);
+  hCtx.rotate(roll);
+
+  // Ground (bottom)
+  hCtx.fillStyle = '#6b3a1f';
+  hCtx.fillRect(-R, -pitchOffset, R*2, R*2 + pitchOffset);
+
+  // Sky (top)
+  hCtx.fillStyle = '#1a3a5c';
+  hCtx.fillRect(-R, -R*2, R*2, R*2 - pitchOffset);
+
+  // Horizon line
+  hCtx.strokeStyle = '#fff';
+  hCtx.lineWidth = 1.5;
+  hCtx.beginPath();
+  hCtx.moveTo(-R, -pitchOffset);
+  hCtx.lineTo(R, -pitchOffset);
+  hCtx.stroke();
+
+  hCtx.restore();
+  hCtx.restore();
+
+  // Outer ring
+  hCtx.beginPath();
+  hCtx.arc(CX, CY, R, 0, Math.PI * 2);
+  hCtx.strokeStyle = 'rgba(190,214,0,0.6)';
+  hCtx.lineWidth = 2;
+  hCtx.stroke();
+
+  // Center crosshair (fixed, not rotating)
+  hCtx.strokeStyle = '#BED600';
+  hCtx.lineWidth = 2;
+  // left wing
+  hCtx.beginPath();
+  hCtx.moveTo(CX - 30, CY);
+  hCtx.lineTo(CX - 10, CY);
+  hCtx.stroke();
+  // right wing
+  hCtx.beginPath();
+  hCtx.moveTo(CX + 10, CY);
+  hCtx.lineTo(CX + 30, CY);
+  hCtx.stroke();
+  // center dot
+  hCtx.beginPath();
+  hCtx.arc(CX, CY, 3, 0, Math.PI * 2);
+  hCtx.fillStyle = '#BED600';
+  hCtx.fill();
+
+  // Roll indicator tick at top
+  hCtx.save();
+  hCtx.translate(CX, CY);
+  hCtx.rotate(roll);
+  hCtx.strokeStyle = '#fff';
+  hCtx.lineWidth = 2;
+  hCtx.beginPath();
+  hCtx.moveTo(0, -R + 2);
+  hCtx.lineTo(0, -R + 10);
+  hCtx.stroke();
+  hCtx.restore();
+
+  // Labels
+  hCtx.fillStyle = 'rgba(0,0,0,0.6)';
+  hCtx.fillRect(0, HH-20, HW, 20);
+  hCtx.fillStyle = '#fff';
+  hCtx.font = '10px Courier New';
+  hCtx.textAlign = 'center';
+  hCtx.fillText('R:' + rollDeg.toFixed(1) + '°  P:' + pitchDeg.toFixed(1) + '°', CX, HH-6);
+}
+
+// ── MILITARY HUD (center screen) ──────────────────────────────────────────
+const hudCanvas = document.getElementById('hudCanvas');
+const hudCtx = hudCanvas.getContext('2d');
+const HUD_W = 480, HUD_H = 320;
+const HUD_CX = HUD_W / 2, HUD_CY = HUD_H / 2;
+
+function drawHUD(rollDeg, pitchDeg) {
+  hudCtx.clearRect(0, 0, HUD_W, HUD_H);
+  const roll = rollDeg * Math.PI / 180;
+  const GREEN = '#BED600';
+  const ALPHA_GREEN = 'rgba(190,214,0,0.85)';
+  const px_per_deg = 5; // pitch ladder scale
+
+  hudCtx.save();
+  hudCtx.translate(HUD_CX, HUD_CY);
+  hudCtx.rotate(roll);
+
+  // ── Pitch ladder ──
+  hudCtx.strokeStyle = ALPHA_GREEN;
+  hudCtx.fillStyle = ALPHA_GREEN;
+  hudCtx.font = 'bold 11px Courier New';
+  hudCtx.textAlign = 'left';
+  hudCtx.lineWidth = 1.5;
+
+  for (let deg = -30; deg <= 30; deg += 5) {
+    if (deg === 0) continue;
+    const y = -deg * px_per_deg + pitchDeg * px_per_deg;
+    const w = (deg % 10 === 0) ? 60 : 35;
+    const dashed = deg < 0;
+
+    hudCtx.save();
+    if (dashed) {
+      hudCtx.setLineDash([4, 4]);
+    } else {
+      hudCtx.setLineDash([]);
+    }
+    // left tick
+    hudCtx.beginPath();
+    hudCtx.moveTo(-w, y);
+    hudCtx.lineTo(-10, y);
+    hudCtx.stroke();
+    // right tick
+    hudCtx.beginPath();
+    hudCtx.moveTo(10, y);
+    hudCtx.lineTo(w, y);
+    hudCtx.stroke();
+    hudCtx.setLineDash([]);
+
+    if (deg % 10 === 0) {
+      hudCtx.fillText(Math.abs(deg), w + 4, y + 4);
+      hudCtx.textAlign = 'right';
+      hudCtx.fillText(Math.abs(deg), -w - 4, y + 4);
+      hudCtx.textAlign = 'left';
+    }
+    hudCtx.restore();
+  }
+
+  // ── Horizon line (zero pitch, full width) ──
+  const horizY = pitchDeg * px_per_deg;
+  hudCtx.strokeStyle = GREEN;
+  hudCtx.lineWidth = 2;
+  hudCtx.setLineDash([]);
+  // left segment
+  hudCtx.beginPath();
+  hudCtx.moveTo(-150, horizY);
+  hudCtx.lineTo(-55, horizY);
+  hudCtx.stroke();
+  // right segment
+  hudCtx.beginPath();
+  hudCtx.moveTo(55, horizY);
+  hudCtx.lineTo(150, horizY);
+  hudCtx.stroke();
+
+  hudCtx.restore(); // end roll rotation
+
+  // ── Fixed aircraft reticle (center, no rotation) ──
+  hudCtx.strokeStyle = GREEN;
+  hudCtx.lineWidth = 2.5;
+  hudCtx.setLineDash([]);
+
+  // left wing
+  hudCtx.beginPath();
+  hudCtx.moveTo(HUD_CX - 55, HUD_CY);
+  hudCtx.lineTo(HUD_CX - 20, HUD_CY);
+  hudCtx.stroke();
+  // left wing up-tick
+  hudCtx.beginPath();
+  hudCtx.moveTo(HUD_CX - 20, HUD_CY);
+  hudCtx.lineTo(HUD_CX - 20, HUD_CY - 10);
+  hudCtx.stroke();
+
+  // right wing
+  hudCtx.beginPath();
+  hudCtx.moveTo(HUD_CX + 20, HUD_CY);
+  hudCtx.lineTo(HUD_CX + 55, HUD_CY);
+  hudCtx.stroke();
+  // right wing up-tick
+  hudCtx.beginPath();
+  hudCtx.moveTo(HUD_CX + 20, HUD_CY);
+  hudCtx.lineTo(HUD_CX + 20, HUD_CY - 10);
+  hudCtx.stroke();
+
+  // center dot
+  hudCtx.beginPath();
+  hudCtx.arc(HUD_CX, HUD_CY, 3, 0, Math.PI * 2);
+  hudCtx.fillStyle = GREEN;
+  hudCtx.fill();
+
+  // ── Roll arc + indicator ──
+  const arcR = 110;
+  hudCtx.strokeStyle = 'rgba(190,214,0,0.4)';
+  hudCtx.lineWidth = 1.5;
+  hudCtx.beginPath();
+  hudCtx.arc(HUD_CX, HUD_CY, arcR, Math.PI * 1.1, Math.PI * 1.9);
+  hudCtx.stroke();
+
+  // Roll tick marks on arc
+  hudCtx.strokeStyle = 'rgba(190,214,0,0.7)';
+  [- 45, -30, -20, -10, 0, 10, 20, 30, 45].forEach(function(a) {
+    const ang = (a - 90) * Math.PI / 180;
+    const len = (a % 30 === 0) ? 10 : 6;
+    const x1 = HUD_CX + arcR * Math.cos(ang);
+    const y1 = HUD_CY + arcR * Math.sin(ang);
+    const x2 = HUD_CX + (arcR - len) * Math.cos(ang);
+    const y2 = HUD_CY + (arcR - len) * Math.sin(ang);
+    hudCtx.beginPath();
+    hudCtx.moveTo(x1, y1);
+    hudCtx.lineTo(x2, y2);
+    hudCtx.stroke();
+  });
+
+  // Roll pointer (rotates with roll)
+  const rollAng = (-rollDeg - 90) * Math.PI / 180;
+  const px = HUD_CX + (arcR - 2) * Math.cos(rollAng);
+  const py = HUD_CY + (arcR - 2) * Math.sin(rollAng);
+  // triangle pointer
+  hudCtx.save();
+  hudCtx.translate(px, py);
+  hudCtx.rotate(rollAng + Math.PI / 2);
+  hudCtx.fillStyle = GREEN;
+  hudCtx.beginPath();
+  hudCtx.moveTo(0, 0);
+  hudCtx.lineTo(-5, 10);
+  hudCtx.lineTo(5, 10);
+  hudCtx.closePath();
+  hudCtx.fill();
+  hudCtx.restore();
+
+  // ── Roll & pitch values ──
+  hudCtx.fillStyle = ALPHA_GREEN;
+  hudCtx.font = 'bold 11px Courier New';
+  hudCtx.textAlign = 'center';
+  hudCtx.fillText(
+    'R ' + (rollDeg >= 0 ? '+' : '') + rollDeg.toFixed(1) + '°   P ' + (pitchDeg >= 0 ? '+' : '') + pitchDeg.toFixed(1) + '°',
+    HUD_CX, HUD_CY + arcR - 4
+  );
+}
+
+// ── COMPASS ROSE ───────────────────────────────────────────────────────────
+const cCanvas = document.getElementById('compassCanvas');
+const cCtx = cCanvas.getContext('2d');
+const CW = 130, CH = 80;
+
+function drawCompass(heading) {
+  cCtx.clearRect(0, 0, CW, CH);
+
+  const cx = CW / 2, cy = CH - 14;
+  const arcR = 38;
+
+  // Background
+  cCtx.fillStyle = 'rgba(0,0,0,0.6)';
+  cCtx.beginPath();
+  cCtx.arc(cx, cy, arcR + 4, Math.PI, 0);
+  cCtx.closePath();
+  cCtx.fill();
+
+  // Arc
+  cCtx.beginPath();
+  cCtx.arc(cx, cy, arcR, Math.PI, 0);
+  cCtx.strokeStyle = '#555';
+  cCtx.lineWidth = 2;
+  cCtx.stroke();
+
+  // Draw N/E/S/W labels
+  const dirs = [
+    { label: 'N', deg: 0 },
+    { label: 'NE', deg: 45 },
+    { label: 'E', deg: 90 },
+    { label: 'SE', deg: 135 },
+    { label: 'S', deg: 180 },
+    { label: 'SW', deg: 225 },
+    { label: 'W', deg: 270 },
+    { label: 'NW', deg: 315 },
+  ];
+
+  dirs.forEach(({ label, deg }) => {
+    // Angle on the arc relative to heading, mapped to semicircle
+    let relAngle = ((deg - heading + 540) % 360) - 180;
+    if (Math.abs(relAngle) > 90) return; // not visible in half-arc
+
+    // Map relAngle [-90, 90] → arc angle [π, 0] (left to right)
+    const arcAngle = Math.PI - (relAngle + 90) * Math.PI / 180;
+    const px = cx + arcR * Math.cos(arcAngle);
+    const py = cy + arcR * Math.sin(arcAngle);
+
+    const isCard = ['N','E','S','W'].includes(label);
+    cCtx.font = isCard ? 'bold 11px Courier New' : '9px Courier New';
+    cCtx.fillStyle = label === 'N' ? '#e74c3c' : '#ddd';
+    cCtx.textAlign = 'center';
+    cCtx.textBaseline = 'middle';
+    cCtx.fillText(label, px, py - 8);
+
+    // Tick
+    cCtx.beginPath();
+    cCtx.arc(cx, cy, arcR - (isCard ? 2 : 4), arcAngle - 0.01, arcAngle + 0.01);
+    cCtx.strokeStyle = isCard ? '#fff' : '#888';
+    cCtx.lineWidth = isCard ? 2 : 1;
+    cCtx.stroke();
+  });
+
+  // Heading pointer (bottom center)
+  cCtx.beginPath();
+  cCtx.moveTo(cx, cy - 4);
+  cCtx.lineTo(cx - 6, cy + 10);
+  cCtx.lineTo(cx + 6, cy + 10);
+  cCtx.closePath();
+  cCtx.fillStyle = '#BED600';
+  cCtx.fill();
+
+  // Heading value
+  cCtx.fillStyle = '#fff';
+  cCtx.font = 'bold 13px Courier New';
+  cCtx.textAlign = 'center';
+  cCtx.textBaseline = 'top';
+  cCtx.fillText(String(heading).padStart(3, '0') + '°', cx, 2);
+}
+
+// Initialize with default values
+drawHorizon(0, 0);
+drawHUD(0, 0);
+drawCompass(0);
+
+// ── PANEL TOGGLE ───────────────────────────────────────────────────────────
+function togglePanel() {
+  document.getElementById('panel').classList.toggle('open');
+}
+
+// ── API CALLS ──────────────────────────────────────────────────────────────
+async function apiArm(arm) {
+  try {
+    const r = await fetch('/api/arm', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({arm})
+    });
+    const d = await r.json();
+    if (d.error) alert('ARM error: ' + d.error);
+  } catch(e) { alert('Request failed: ' + e.message); }
+}
+
+async function apiMode(mode) {
+  try {
+    const r = await fetch('/api/mode', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({mode})
+    });
+    const d = await r.json();
+    if (d.error) alert('Mode error: ' + d.error);
+  } catch(e) { alert('Request failed: ' + e.message); }
+}
+
+async function apiDisableGps() {
+  try {
+    const r = await fetch('/api/disable_gps', { method: 'POST', headers: {'Content-Type':'application/json'} });
+    const d = await r.json();
+    if (d.error) { alert('GPS error: ' + d.error); return; }
+    gpsDisabled = d.gps_disabled;
+    const btn = document.getElementById('btnGps');
+    btn.textContent = gpsDisabled ? 'GPS ENABLE' : 'GPS DISABLE';
+    btn.classList.toggle('active', gpsDisabled);
+  } catch(e) { alert('Request failed: ' + e.message); }
+}
+
+async function apiRestartMission() {
+  if (!confirm('Restart mission from waypoint 0?')) return;
+  try {
+    const r = await fetch('/api/restart_mission', { method: 'POST', headers: {'Content-Type':'application/json'} });
+    const d = await r.json();
+    if (d.error) alert('Mission error: ' + d.error);
+    else alert('Mission restarted!');
+  } catch(e) { alert('Request failed: ' + e.message); }
+}
+
+// ── WEBRTC / WHEP ──────────────────────────────────────────────────────────
+const video = document.getElementById('videoEl');
+const noSig = document.getElementById('noSignal');
+let currentPc = null;
+let autoReconnect = true;
+
+async function stopWhep() {
+  autoReconnect = false;
+  if (currentPc) {
+    currentPc.close();
+    currentPc = null;
+  }
+  video.srcObject = null;
+  noSig.style.display = 'block';
+}
+
+async function startWhep() {
+  autoReconnect = true;
+  if (currentPc) { currentPc.close(); currentPc = null; }
+
+  const whepUrl = 'http://localhost:8889/stream/whep';
+  try {
+    const pc = new RTCPeerConnection({
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+    });
+    currentPc = pc;
+
+    pc.ontrack = (evt) => {
+      if (evt.streams && evt.streams[0]) {
+        video.srcObject = evt.streams[0];
+        noSig.style.display = 'none';
+        updateVideoBtn(true);
+      }
+    };
+
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    await new Promise(resolve => {
+      if (pc.iceGatheringState === 'complete') { resolve(); return; }
+      pc.addEventListener('icegatheringstatechange', () => {
+        if (pc.iceGatheringState === 'complete') resolve();
+      });
+      setTimeout(resolve, 3000);
+    });
+
+    const resp = await fetch(whepUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/sdp' },
+      body: pc.localDescription.sdp
+    });
+
+    if (!resp.ok) throw new Error('WHEP: ' + resp.status);
+
+    const answerSdp = await resp.text();
+    await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+
+    pc.oniceconnectionstatechange = () => {
+      if (['disconnected','failed','closed'].includes(pc.iceConnectionState)) {
+        noSig.style.display = 'block';
+        updateVideoBtn(false);
+        if (autoReconnect) setTimeout(startWhep, 5000);
+      }
+    };
+
+  } catch(e) {
+    console.warn('WHEP failed:', e.message);
+    noSig.style.display = 'block';
+    updateVideoBtn(false);
+    if (autoReconnect) setTimeout(startWhep, 5000);
+  }
+}
+
+function reconnectVideo() {
+  const btn = document.getElementById('videoreconnectBtn');
+  btn.textContent = '⟳';
+  btn.style.opacity = '0.5';
+  btn.disabled = true;
+  startWhep().finally(() => {
+    setTimeout(() => {
+      btn.textContent = '⟳ VIDEO';
+      btn.style.opacity = '1';
+      btn.disabled = false;
+    }, 2000);
+  });
+}
+
+function updateVideoBtn(active) {
+  const btn = document.getElementById('videoreconnectBtn');
+  if (!btn) return;
+  btn.style.borderColor = active ? '#BED600' : '#e74c3c';
+  btn.style.color = active ? '#BED600' : '#e74c3c';
+}
+
+startWhep();
+</script>
+</body>
+</html>

@@ -1,0 +1,99 @@
+name: Build Windows EXE
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        pip install pymavlink flask flask-socketio eventlet pyinstaller
+
+    - name: Download mediamtx for Windows
+      shell: powershell
+      run: |
+        $url = "https://github.com/bluenviron/mediamtx/releases/latest/download/mediamtx_v1.9.1_windows_amd64.zip"
+        Invoke-WebRequest -Uri $url -OutFile mediamtx.zip
+        Expand-Archive mediamtx.zip -DestinationPath mediamtx_win -Force
+        Copy-Item mediamtx_win\mediamtx.exe .\mediamtx.exe
+      continue-on-error: true
+
+    - name: Build EXE with PyInstaller
+      run: |
+        pyinstaller --onefile --name "FPV-GroundStation" --add-data "static;static" --add-data "mediamtx.yml;." --hidden-import=engineio.async_drivers.eventlet --hidden-import=eventlet.hubs.epolls --hidden-import=eventlet.hubs.kqueue --hidden-import=eventlet.hubs.selects --hidden-import=dns --hidden-import=dns.resolver app.py
+
+    - name: Copy mediamtx.exe to dist
+      shell: powershell
+      run: |
+        if (Test-Path "mediamtx.exe") {
+          Copy-Item mediamtx.exe dist\mediamtx.exe
+        }
+      continue-on-error: true
+
+    - name: Create launcher batch file
+      shell: powershell
+      run: |
+        $bat = @"
+        @echo off
+        title FPV Ground Station
+        echo Starting FPV Ground Station...
+        echo.
+        echo Video proxy starting (mediamtx)...
+        if exist mediamtx.exe (
+          start /min mediamtx.exe mediamtx.yml
+        )
+        echo.
+        echo Opening browser at http://localhost:8086
+        timeout /t 2 /nobreak >nul
+        start http://localhost:8086
+        echo.
+        echo MAVLink listening on UDP port 14550
+        FPV-GroundStation.exe
+        "@
+        $bat | Out-File -FilePath dist\START.bat -Encoding ASCII
+
+    - name: Package release
+      shell: powershell
+      run: |
+        Copy-Item mediamtx.yml dist\mediamtx.yml
+        Compress-Archive -Path dist\* -DestinationPath FPV-GroundStation-Windows.zip
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: FPV-GroundStation-Windows
+        path: FPV-GroundStation-Windows.zip
+        retention-days: 30
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: latest
+        name: FPV Ground Station - Latest Build
+        files: FPV-GroundStation-Windows.zip
+        body: |
+          ## FPV Ground Station for Windows
+
+          ### Installation
+          1. Download and extract `FPV-GroundStation-Windows.zip`
+          2. Double-click `START.bat`
+          3. Browser opens automatically at http://localhost:8086
+
+          ### Requirements
+          - Windows 10/11 x64
+          - No Python needed
+        make_latest: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
