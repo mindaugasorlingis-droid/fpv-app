@@ -519,7 +519,7 @@ function mpTypeChange() {
   if (t==='udpci') {
     document.getElementById('mpHost').value = '0.0.0.0';
     document.getElementById('mpPort').value = '19856';
-    document.getElementById('mpHost').disabled = true;
+    document.getElementById('mpHost').disabled = false;  // Allow manual IP entry
   } else if (t==='udp') {
     document.getElementById('mpHost').value = '192.168.144.12';
     document.getElementById('mpPort').value = '19856';
@@ -538,8 +538,9 @@ mpTypeChange();
 function buildConnString() {
   const t = document.getElementById('mpConnType').value;
   if (t === 'udpci') {
+    const host = document.getElementById('mpHost').value.trim() || '0.0.0.0';
     const port = document.getElementById('mpPort').value || '19856';
-    return 'udpin:0.0.0.0:' + port;
+    return 'udpin:' + host + ':' + port;
   } else if (t === 'udp') {
     const host = document.getElementById('mpHost').value || '192.168.144.12';
     const port = document.getElementById('mpPort').value || '19856';
