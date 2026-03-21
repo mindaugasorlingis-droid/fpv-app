@@ -118,40 +118,52 @@ GPS_FIX_TYPES = {
 
 
 def make_connection(cs):
-    """Build pymavlink connection — Windows-safe."""
+    """Build pymavlink connection — Windows-safe.
+    
+    Windows problem: pymavlink calls setblocking(0) on socket, then later
+    tries socket operations that fail with WINERROR 10022 on non-blocking UDP.
+    
+    Fix: create socket, call connect() BEFORE setblocking(0), then patch into mavudp.
+    """
     import socket as _socket
 
     if cs.startswith('udpout:') or cs.startswith('udp:'):
-        # Windows-safe UDP out: use blocking socket + sendto (no connect)
         parts = cs.split(':', 2)
         host = parts[1].lstrip('/')
         port = int(parts[2])
+
+        # Create UDP socket the Windows-safe way:
+        # connect() first (while blocking), THEN hand to pymavlink
         sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
         sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
-        sock.bind(('', 0))  # bind to random local port
-        sock.setblocking(True)
-        sock.settimeout(1.0)
-        # Wrap with mavudp-like object via mavlink_connection using udpin trick:
-        # We'll use a local loopback bridge approach — simplest: use mavfile directly
-        # Actually easiest: just use udpin on a local port and bridge
-        # SIMPLEST FIX: patch setblocking AFTER mavudp init
-        conn = mavutil.mavlink_connection(
-            f'udpin:0.0.0.0:0',  # bind random port
-            source_system=255, source_component=0
-        )
-        # Replace the internal socket destination
-        conn.port.close()
+        sock.bind(('', 0))
+        # connect() on UDP just sets default dest — works on Windows while blocking
+        sock.connect((host, port))
+        # Now set non-blocking (pymavlink expects this)
+        sock.setblocking(False)
+
+        # Build mavudp manually, bypass __init__ socket creation
+        conn = mavutil.mavudp.__new__(mavutil.mavudp)
         conn.port = sock
         conn.udp_server = False
+        conn.broadcast = False
         conn.destination_addr = (host, port)
-        conn.resolved_destination_addr = None
+        conn.resolved_destination_addr = host
+        conn.last_address = None
+        conn.timeout = 0
+        conn.clients = set()
+        conn.clients_last_alive = {}
+        # Init mavfile base class
+        mavutil.mavfile.__init__(conn, sock.fileno(), f'{host}:{port}',
+                                 source_system=255, source_component=0,
+                                 input=False)
         return conn
 
     elif cs.startswith('udpin:'):
         return mavutil.mavlink_connection(cs, source_system=255, source_component=0)
 
     else:
-        # TCP, serial, etc — use directly
+        # TCP, serial — use directly
         return mavutil.mavlink_connection(cs, source_system=255, source_component=0)
 
 
