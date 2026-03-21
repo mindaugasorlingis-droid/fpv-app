@@ -22,7 +22,7 @@ jobs:
 
     - name: Install dependencies
       run: |
-        pip install pymavlink flask flask-socketio eventlet pyinstaller
+        pip install pymavlink flask flask-socketio pyinstaller
 
     - name: Download mediamtx for Windows
       shell: powershell
@@ -35,7 +35,7 @@ jobs:
 
     - name: Build EXE with PyInstaller
       run: |
-        pyinstaller --onefile --name "FPV-GroundStation" --add-data "static;static" --add-data "mediamtx.yml;." --hidden-import=engineio.async_drivers.eventlet --hidden-import=eventlet.hubs.epolls --hidden-import=eventlet.hubs.kqueue --hidden-import=eventlet.hubs.selects --hidden-import=dns --hidden-import=dns.resolver app.py
+        pyinstaller --onefile --name "FPV-GroundStation" --add-data "static;static" --add-data "mediamtx.yml;." --hidden-import=engineio.async_drivers.threading --hidden-import=flask_socketio --hidden-import=socketio --hidden-import=pymavlink --hidden-import=pymavlink.dialects --hidden-import=pymavlink.dialects.v20 --hidden-import=pymavlink.dialects.v20.ardupilotmega --collect-all flask_socketio --collect-all pymavlink app.py
 
     - name: Copy mediamtx.exe to dist
       shell: powershell

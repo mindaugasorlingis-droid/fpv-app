@@ -19,7 +19,7 @@ except ImportError:
 
 app = Flask(__name__, static_folder='static')
 app.config['SECRET_KEY'] = 'fpv-secret-key'
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 # Global MAVLink connection and state
 mav_connection = None
@@ -344,4 +344,4 @@ if __name__ == '__main__':
     telem_thread.start()
 
     print("Starting FPV app on port 8086...")
-    socketio.run(app, host='0.0.0.0', port=8086, debug=False)
+    socketio.run(app, host='0.0.0.0', port=8086, debug=False, allow_unsafe_werkzeug=True)
