@@ -33,6 +33,16 @@ except ImportError:
     MAVLINK_AVAILABLE = False
     print("WARNING: pymavlink not available")
 
+# YOLO import (lazy — loaded on first use)
+yolo_model = None
+yolo_lock = threading.Lock()
+YOLO_AVAILABLE = False
+try:
+    from ultralytics import YOLO
+    YOLO_AVAILABLE = True
+except ImportError:
+    print("WARNING: ultralytics not available - YOLO detection disabled")
+
 app = Flask(__name__, static_folder=os.path.join(BASE_DIR, 'static'))
 app.config['SECRET_KEY'] = 'fpv-secret-key'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
@@ -43,7 +53,6 @@ mav_lock = threading.Lock()
 mav_connect_string = 'udpin:0.0.0.0:19856'
 mav_status = {'connected': False, 'connecting': False, 'error': None, 'connection_string': 'udpin:0.0.0.0:19856'}
 mav_manual_only = True  # No auto-connect on startup
-_mav_conn_params = {'type': 'udpin', 'ip': '0.0.0.0', 'port': '19856', 'baud': '115200'}
 mav_stop_event = threading.Event()
 
 telemetry = {
@@ -108,35 +117,13 @@ GPS_FIX_TYPES = {
 }
 
 
-def build_mavlink_connection(conn_type, ip, port, baud=115200):
-    """Build pymavlink connection."""
-    port = int(port)
-    if conn_type in ('udpin', 'udpci'):
-        # UDPCI = listen on local port, drone sends packets here
-        # Same as Mission Planner UDPCI
-        return mavutil.mavlink_connection(f'udpin:0.0.0.0:{port}',
-                                          source_system=255, source_component=0)
-    elif conn_type == 'udpout':
-        # Send to remote IP
-        return mavutil.mavlink_connection(f'udpout:{ip}:{port}',
-                                          source_system=255, source_component=0)
-    elif conn_type == 'tcp':
-        return mavutil.mavlink_connection(f'tcp:{ip}:{port}',
-                                          source_system=255, source_component=0)
-    elif conn_type == 'serial':
-        return mavutil.mavlink_connection(port, baud=baud,
-                                          source_system=255, source_component=0)
-    else:
-        return mavutil.mavlink_connection(f'udpin:0.0.0.0:{port}',
-                                          source_system=255, source_component=0)
-
-
 def connect_mavlink(connection_string=None):
-    """Connect to MAVLink — single attempt, no auto-retry."""
-    global mav_connection, mav_connect_string, mav_status, mav_stop_event, \
-           _mav_conn_params
+    """Connect to MAVLink using raw connection string — single attempt, no auto-retry."""
+    global mav_connection, mav_connect_string, mav_status, mav_stop_event
+
     if connection_string:
         mav_connect_string = connection_string
+
     mav_stop_event.clear()
     try:
         cs = mav_connect_string
@@ -146,13 +133,7 @@ def connect_mavlink(connection_string=None):
         mav_status['error'] = None
         mav_status['connection_string'] = cs
 
-        # Parse stored params for cleaner connection
-        ct = _mav_conn_params.get('type', 'udpout')
-        ip = _mav_conn_params.get('ip', '192.168.144.12')
-        port = int(_mav_conn_params.get('port', 19856))
-        baud = int(_mav_conn_params.get('baud', 115200))
-
-        conn = build_mavlink_connection(ct, ip, port, baud)
+        conn = mavutil.mavlink_connection(cs, source_system=255, source_component=0)
         conn.wait_heartbeat(timeout=15)
         print(f"MAVLink connected: sys={conn.target_system}")
         with mav_lock:
@@ -176,7 +157,6 @@ def connect_mavlink(connection_string=None):
 def receive_loop(conn):
     """Receive and process MAVLink messages."""
     global telemetry
-    import select as select_mod
     # For serial: flush stale buffer before starting
     try:
         if hasattr(conn, 'port') and hasattr(conn.port, 'flushInput'):
@@ -264,7 +244,6 @@ def api_serial_ports():
             })
         ports.sort(key=lambda x: x['device'])
     except ImportError:
-        # pyserial not installed - try manual detection
         import glob, platform
         if platform.system() == 'Windows':
             import winreg
@@ -296,30 +275,14 @@ def api_connection_status():
 
 @app.route('/api/connect', methods=['POST'])
 def api_connect():
-    global mav_connect_string, mav_stop_event, _mav_conn_params
+    """Accept a raw connection_string and connect directly via pymavlink."""
+    global mav_connect_string, mav_stop_event
     data = request.get_json() or {}
-    ip   = data.get('ip', '').strip()
-    port = str(data.get('port', '19856')).strip()
-    conn_type = data.get('type', 'udpout')
-    baud = str(data.get('baud', '115200'))
 
-    if not ip and conn_type not in ('udpin', 'serial'):
-        return jsonify({'error': 'IP is required'}), 400
-
-    # Store params for cleaner connection building
-    _mav_conn_params = {'type': conn_type, 'ip': ip, 'port': port, 'baud': baud}
-
-    # Human-readable connection string for display only
-    if conn_type in ('udpout', 'udpci'):
-        cs = f'udpout:{ip}:{port}'
-    elif conn_type == 'udpin':
-        cs = f'udpin:0.0.0.0:{port}'
-    elif conn_type == 'tcp':
-        cs = f'tcp:{ip}:{port}'
-    elif conn_type == 'serial':
-        cs = f'{port}@{baud}'
-    else:
-        cs = f'udpout:{ip}:{port}'
+    # Accept raw connection_string field
+    cs = data.get('connection_string', '').strip()
+    if not cs:
+        return jsonify({'error': 'connection_string is required'}), 400
 
     # Stop current connection
     mav_stop_event.set()
@@ -409,9 +372,7 @@ def api_restart_mission():
     if not conn:
         return jsonify({'error': 'MAVLink not connected'}), 503
     try:
-        # Set current waypoint to 0
         conn.mav.mission_set_current_send(conn.target_system, conn.target_component, 0)
-        # Set mode to AUTO
         auto_num = MODE_NAME_TO_NUM.get('AUTO', 10)
         conn.set_mode(auto_num)
         return jsonify({'ok': True})
@@ -435,14 +396,10 @@ def on_disconnect():
 
 # ─── Video Stream ─────────────────────────────────────────────────────────────
 RTSP_URL = 'rtsp://192.168.144.25:8554/main.264'
-GSTREAMER_PIPELINE = (
-    f'rtspsrc location={RTSP_URL} latency=0 ! '
-    'rtph264depay ! avdec_h264 ! videoconvert ! '
-    'video/x-raw,format=BGR ! appsink name=outsink drop=true max-buffers=1'
-)
 
 video_frame = None
 raw_frame = None  # Unencoded frame for tracker
+raw_frame_event = threading.Event()  # Signals when raw_frame becomes available
 frame_w = 640
 frame_h = 480
 video_lock = threading.Lock()
@@ -455,6 +412,75 @@ tracker_lock = threading.Lock()
 tracker_bbox = None   # (x, y, w, h) normalized 0..1
 tracker_active = False
 
+# ── YOLO detections ───────────────────────────────────────────────────────────
+yolo_detections = []          # list of {x, y, w, h, conf} normalized 0..1
+yolo_detect_enabled = False   # toggled by client
+yolo_detections_lock = threading.Lock()
+
+
+def get_yolo_model():
+    """Lazy-load YOLOv8n model on first use."""
+    global yolo_model
+    with yolo_lock:
+        if yolo_model is None and YOLO_AVAILABLE:
+            print("Loading YOLOv8n model (downloading if needed)...")
+            yolo_model = YOLO('yolov8n.pt')
+            print("YOLOv8n model loaded.")
+        return yolo_model
+
+
+def yolo_detection_loop():
+    """Background thread: run YOLO person detection every 500ms when tracker is NOT active."""
+    global yolo_detections
+    while True:
+        time.sleep(0.5)
+        if not yolo_detect_enabled:
+            continue
+        if tracker_active:
+            # Don't run detection when tracker is running
+            continue
+        if not YOLO_AVAILABLE:
+            continue
+
+        with video_lock:
+            frame = raw_frame.copy() if raw_frame is not None else None
+
+        if frame is None:
+            continue
+
+        try:
+            model = get_yolo_model()
+            if model is None:
+                continue
+
+            h, w = frame.shape[:2]
+            results = model(frame, classes=[0], verbose=False)  # class 0 = person
+            dets = []
+            for r in results:
+                if r.boxes is None:
+                    continue
+                for box in r.boxes:
+                    conf = float(box.conf[0])
+                    if conf < 0.35:
+                        continue
+                    x1, y1, x2, y2 = box.xyxy[0].tolist()
+                    dets.append({
+                        'x': x1 / w,
+                        'y': y1 / h,
+                        'w': (x2 - x1) / w,
+                        'h': (y2 - y1) / h,
+                        'conf': round(conf, 2)
+                    })
+
+            with yolo_detections_lock:
+                yolo_detections = dets
+
+            socketio.emit('detections', dets)
+
+        except Exception as e:
+            print(f"YOLO detection error: {e}")
+
+
 def video_capture_loop():
     global video_frame, raw_frame, frame_w, frame_h, video_running, video_active
     global tracker, tracker_bbox, tracker_active
@@ -466,7 +492,6 @@ def video_capture_loop():
         cap = None
         try:
             if CV2_AVAILABLE:
-                # Low-latency RTSP options via FFMPEG
                 os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;udp|fflags;nobuffer|flags;low_delay|framedrop;1'
                 cap = cv2.VideoCapture(RTSP_URL, cv2.CAP_FFMPEG)
                 if not cap.isOpened():
@@ -502,15 +527,16 @@ def video_capture_loop():
                                     'ok': True, 'active': True
                                 }
                                 tracker_bbox = nb
-                                # Emit to frontend canvas
                                 socketio.emit('tracker_box', nb)
                             else:
                                 tracker_bbox = {'ok': False}
                                 socketio.emit('tracker_box', {'ok': False, 'active': True})
 
-                    # Save raw frame BEFORE encoding (for tracker init)
+                    # Save raw frame BEFORE encoding (for tracker init and YOLO)
                     with video_lock:
                         raw_frame = frame.copy()
+                        raw_frame_event.set()  # signal that a frame is available
+
                     _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
                     with video_lock:
                         video_frame = jpeg.tobytes()
@@ -526,6 +552,7 @@ def video_capture_loop():
             with video_lock:
                 video_frame = None
                 raw_frame = None
+            raw_frame_event.clear()
         time.sleep(1)
 
 
@@ -576,12 +603,22 @@ def api_tracker_start():
     ny = float(data.get('y', 0))
     nw = float(data.get('w', 0.1))
     nh = float(data.get('h', 0.1))
+
+    # Wait up to 2 seconds for raw_frame if it's None (fix race condition)
     with video_lock:
         frame = raw_frame
     if frame is None:
-        return jsonify({'error': 'No video frame available'}), 400
+        got_frame = raw_frame_event.wait(timeout=2.0)
+        if not got_frame:
+            return jsonify({'error': 'No video frame available — video not started?'}), 400
+        with video_lock:
+            frame = raw_frame
+        if frame is None:
+            return jsonify({'error': 'No video frame available'}), 400
+
     if not CV2_AVAILABLE:
         return jsonify({'error': 'cv2 not available'}), 400
+
     h, w = frame.shape[:2]
     x = int(nx * w)
     y = int(ny * h)
@@ -617,12 +654,38 @@ def api_tracker_stop():
     return jsonify({'ok': True})
 
 
+@app.route('/api/tracker/detect', methods=['POST'])
+def api_tracker_detect():
+    """Return current YOLO detections immediately."""
+    with yolo_detections_lock:
+        dets = list(yolo_detections)
+    return jsonify({'detections': dets})
+
+
+@app.route('/api/tracker/detect/toggle', methods=['POST'])
+def api_tracker_detect_toggle():
+    """Toggle auto-detection on/off."""
+    global yolo_detect_enabled
+    data = request.get_json() or {}
+    if 'enabled' in data:
+        yolo_detect_enabled = bool(data['enabled'])
+    else:
+        yolo_detect_enabled = not yolo_detect_enabled
+    return jsonify({'ok': True, 'enabled': yolo_detect_enabled})
+
+
 if __name__ == '__main__':
     # Start video capture thread (waits for manual connect)
     if CV2_AVAILABLE:
         threading.Thread(target=video_capture_loop, daemon=True).start()
     else:
         print("cv2 not available - video disabled")
+
+    # Start YOLO detection thread
+    if YOLO_AVAILABLE:
+        threading.Thread(target=yolo_detection_loop, daemon=True).start()
+    else:
+        print("YOLO not available - detection disabled")
 
     # MAVLink: manual connect only — do NOT auto-connect on startup
     if not MAVLINK_AVAILABLE:
