@@ -1142,6 +1142,7 @@ let drawStart = null;
 let drawRect = null;
 let trackerActive = false;
 let trackerBox = null;
+let videoNativeW = 0, videoNativeH = 0;
 
 function resizeTrackCanvas() {
   const vw = trackCanvas.parentElement;
@@ -1151,12 +1152,39 @@ function resizeTrackCanvas() {
 window.addEventListener('resize', resizeTrackCanvas);
 resizeTrackCanvas();
 
+socket.on('video_dims', d => { videoNativeW = d.w; videoNativeH = d.h; });
+socket.on('video_status', d => { if (d.w) { videoNativeW = d.w; videoNativeH = d.h; } });
+
+// Get position relative to actual video content (letterbox aware)
+function getVideoRect() {
+  const img = document.getElementById('videoEl');
+  const cr = trackCanvas.getBoundingClientRect();
+  if (videoNativeW && videoNativeH) {
+    const cw = cr.width, ch = cr.height;
+    const vRatio = videoNativeW / videoNativeH;
+    const cRatio = cw / ch;
+    let vw, vh, vx, vy;
+    if (vRatio > cRatio) {
+      vw = cw; vh = cw / vRatio;
+      vx = 0; vy = (ch - vh) / 2;
+    } else {
+      vh = ch; vw = ch * vRatio;
+      vx = (cw - vw) / 2; vy = 0;
+    }
+    return {x: vx, y: vy, w: vw, h: vh};
+  }
+  return {x: 0, y: 0, w: cr.width, h: cr.height};
+}
+
 function getCanvasPos(e) {
   const r = trackCanvas.getBoundingClientRect();
+  const vr = getVideoRect();
   const touch = e.touches ? e.touches[0] : e;
+  const cx = touch.clientX - r.left;
+  const cy = touch.clientY - r.top;
   return {
-    x: (touch.clientX - r.left) / r.width,
-    y: (touch.clientY - r.top) / r.height
+    x: (cx - vr.x) / vr.w,
+    y: (cy - vr.y) / vr.h
   };
 }
 
@@ -1246,7 +1274,12 @@ function renderTrackCanvas() {
   const box = trackerBox || drawRect;
   if (!box) return;
 
-  const x = box.x * W, y = box.y * H, w = box.w * W, h = box.h * H;
+  // Map normalized coords to actual video area (letterbox aware)
+  const vr = getVideoRect();
+  const x = vr.x + box.x * vr.w;
+  const y = vr.y + box.y * vr.h;
+  const w = box.w * vr.w;
+  const h = box.h * vr.h;
   const GREEN = '#BED600';
   const RED = '#FF4444';
   const color = trackerActive ? GREEN : 'rgba(190,214,0,0.6)';

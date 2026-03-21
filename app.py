@@ -176,6 +176,19 @@ def connect_mavlink(connection_string=None):
 def receive_loop(conn):
     """Receive and process MAVLink messages."""
     global telemetry
+    import select as select_mod
+    # For serial: flush stale buffer before starting
+    try:
+        if hasattr(conn, 'port') and hasattr(conn.port, 'flushInput'):
+            conn.port.flushInput()
+        # Drain any buffered packets quickly
+        for _ in range(200):
+            m = conn.recv_match(blocking=False)
+            if m is None:
+                break
+    except Exception:
+        pass
+
     while True:
         try:
             msg = conn.recv_match(blocking=True, timeout=5)
@@ -467,13 +480,15 @@ def video_capture_loop():
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 cap.set(cv2.CAP_PROP_FPS, 30)
                 print("Video: connected")
-                socketio.emit('video_status', {'connected': True, 'error': None})
+                socketio.emit('video_status', {'connected': True, 'error': None, 'w': frame_w, 'h': frame_h})
                 while video_running and video_active:
                     ret, frame = cap.read()
                     if not ret:
                         break
                     h, w = frame.shape[:2]
-                    frame_w, frame_h = w, h
+                    if w != frame_w or h != frame_h:
+                        frame_w, frame_h = w, h
+                        socketio.emit('video_dims', {'w': w, 'h': h})
 
                     # Run tracker
                     with tracker_lock:
