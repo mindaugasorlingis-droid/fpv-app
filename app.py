@@ -6,8 +6,15 @@ FPV Ground Station - MAVLink WebSocket proxy + Flask backend
 import threading
 import time
 import os
+import sys
 from flask import Flask, request, jsonify, send_from_directory
 from flask_socketio import SocketIO, emit
+
+# PyInstaller support — find bundled files
+if getattr(sys, 'frozen', False):
+    BASE_DIR = sys._MEIPASS
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # MAVLink import
 try:
@@ -17,7 +24,7 @@ except ImportError:
     MAVLINK_AVAILABLE = False
     print("WARNING: pymavlink not available")
 
-app = Flask(__name__, static_folder='static')
+app = Flask(__name__, static_folder=os.path.join(BASE_DIR, 'static'))
 app.config['SECRET_KEY'] = 'fpv-secret-key'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
@@ -333,7 +340,35 @@ def on_disconnect():
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
+def start_mediamtx():
+    """Auto-start mediamtx if present next to exe."""
+    import subprocess, platform
+    exe_name = 'mediamtx.exe' if platform.system() == 'Windows' else 'mediamtx'
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+    else:
+        exe_dir = BASE_DIR
+    mediamtx_path = os.path.join(exe_dir, exe_name)
+    config_path = os.path.join(exe_dir, 'mediamtx.yml')
+    if os.path.exists(mediamtx_path):
+        try:
+            subprocess.Popen(
+                [mediamtx_path, config_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                cwd=exe_dir
+            )
+            print(f"mediamtx started from {mediamtx_path}")
+        except Exception as e:
+            print(f"mediamtx start failed: {e}")
+    else:
+        print(f"mediamtx not found at {mediamtx_path}")
+
+
 if __name__ == '__main__':
+    # Auto-start mediamtx
+    threading.Thread(target=start_mediamtx, daemon=True).start()
+
     if MAVLINK_AVAILABLE:
         mav_thread = threading.Thread(target=connect_mavlink, daemon=True)
         mav_thread.start()
@@ -344,4 +379,6 @@ if __name__ == '__main__':
     telem_thread.start()
 
     print("Starting FPV app on port 8086...")
+    import webbrowser
+    threading.Timer(2.0, lambda: webbrowser.open('http://localhost:8086')).start()
     socketio.run(app, host='0.0.0.0', port=8086, debug=False, allow_unsafe_werkzeug=True)

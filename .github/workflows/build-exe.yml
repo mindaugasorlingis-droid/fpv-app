@@ -48,23 +48,45 @@ jobs:
     - name: Create launcher batch file
       shell: powershell
       run: |
-        $bat = @"
-        @echo off
-        title FPV Ground Station
-        echo Starting FPV Ground Station...
-        echo.
-        echo Video proxy starting (mediamtx)...
-        if exist mediamtx.exe (
-          start /min mediamtx.exe mediamtx.yml
-        )
-        echo.
-        echo Opening browser at http://localhost:8086
-        timeout /t 2 /nobreak >nul
-        start http://localhost:8086
-        echo.
-        echo MAVLink listening on UDP port 14550
-        FPV-GroundStation.exe
-        "@
+        $bat = '@echo off
+title FPV Ground Station
+cd /d "%~dp0"
+
+echo ============================================
+echo  FPV Ground Station - Antara
+echo ============================================
+echo.
+
+REM Add firewall rules (run once)
+netsh advfirewall firewall add rule name="FPV-MAVLink" protocol=UDP dir=in localport=14550 action=allow >nul 2>&1
+netsh advfirewall firewall add rule name="FPV-WebRTC" protocol=UDP dir=in localport=8889 action=allow >nul 2>&1
+netsh advfirewall firewall add rule name="FPV-HTTP" protocol=TCP dir=in localport=8086 action=allow >nul 2>&1
+
+REM Start mediamtx video proxy
+if exist mediamtx.exe (
+  echo [1/2] Starting video proxy (mediamtx)...
+  start "mediamtx" /min mediamtx.exe mediamtx.yml
+  timeout /t 3 /nobreak >nul
+) else (
+  echo [!] mediamtx.exe not found - video will not work
+)
+
+REM Start Flask app
+echo [2/2] Starting FPV Ground Station...
+echo.
+echo MAVLink: UDP port 14550
+echo Video:   http://localhost:8889
+echo Web UI:  http://localhost:8086
+echo.
+
+REM Open browser after short delay
+start "" cmd /c "timeout /t 3 /nobreak >nul && start http://localhost:8086"
+
+FPV-GroundStation.exe
+
+echo.
+echo App stopped. Press any key to exit.
+pause >nul'
         $bat | Out-File -FilePath dist\START.bat -Encoding ASCII
 
     - name: Package release
