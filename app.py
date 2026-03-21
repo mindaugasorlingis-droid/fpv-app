@@ -40,10 +40,10 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 # Global MAVLink connection and state
 mav_connection = None
 mav_lock = threading.Lock()
-mav_connect_string = 'udpout:192.168.144.12:19856'
-mav_status = {'connected': False, 'connecting': False, 'error': None, 'connection_string': 'udpout:192.168.144.12:19856'}
+mav_connect_string = 'udpin:0.0.0.0:19856'
+mav_status = {'connected': False, 'connecting': False, 'error': None, 'connection_string': 'udpin:0.0.0.0:19856'}
 mav_manual_only = True  # No auto-connect on startup
-_mav_conn_params = {'type': 'udpout', 'ip': '192.168.144.12', 'port': '19856', 'baud': '115200'}
+_mav_conn_params = {'type': 'udpin', 'ip': '0.0.0.0', 'port': '19856', 'baud': '115200'}
 mav_stop_event = threading.Event()
 
 telemetry = {
@@ -109,28 +109,25 @@ GPS_FIX_TYPES = {
 
 
 def build_mavlink_connection(conn_type, ip, port, baud=115200):
-    """Build pymavlink connection using raw socket to avoid Windows errors."""
-    import socket as sock_mod
-    if conn_type in ('udpout', 'udpci'):
-        # Manually create UDP socket — send to remote, bind to 0.0.0.0
-        s = sock_mod.socket(sock_mod.AF_INET, sock_mod.SOCK_DGRAM)
-        s.setsockopt(sock_mod.SOL_SOCKET, sock_mod.SO_REUSEADDR, 1)
-        s.bind(('0.0.0.0', 0))  # bind to any local port
-        s.setblocking(False)
-        conn = mavutil.mavudp(f'{ip}:{port}', input=False,
-                              source_system=255, source_component=0)
-        return conn
-    elif conn_type == 'udpin':
+    """Build pymavlink connection."""
+    port = int(port)
+    if conn_type in ('udpin', 'udpci'):
+        # UDPCI = listen on local port, drone sends packets here
+        # Same as Mission Planner UDPCI
         return mavutil.mavlink_connection(f'udpin:0.0.0.0:{port}',
+                                          source_system=255, source_component=0)
+    elif conn_type == 'udpout':
+        # Send to remote IP
+        return mavutil.mavlink_connection(f'udpout:{ip}:{port}',
                                           source_system=255, source_component=0)
     elif conn_type == 'tcp':
         return mavutil.mavlink_connection(f'tcp:{ip}:{port}',
                                           source_system=255, source_component=0)
     elif conn_type == 'serial':
-        return mavutil.mavlink_connection(f'{port}', baud=baud,
+        return mavutil.mavlink_connection(port, baud=baud,
                                           source_system=255, source_component=0)
     else:
-        return mavutil.mavlink_connection(f'udpout:{ip}:{port}',
+        return mavutil.mavlink_connection(f'udpin:0.0.0.0:{port}',
                                           source_system=255, source_component=0)
 
 
