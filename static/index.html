@@ -1080,6 +1080,7 @@ let videoConnected = false;
 function onVideoLoad() {
   noSig.style.display = 'none';
   setVideoBtn(true);
+  resizeTrackCanvas();
 }
 
 function onVideoError() {
@@ -1226,6 +1227,19 @@ socket.on('tracker_status', d => {
   }
 });
 
+socket.on('tracker_box', d => {
+  if (!d.active) return;
+  if (!d.ok) {
+    // Lost tracking
+    trackerBox = null;
+    renderTrackCanvas();
+    return;
+  }
+  // Update box position from server
+  trackerBox = {x: d.x, y: d.y, w: d.w, h: d.h};
+  renderTrackCanvas();
+});
+
 function renderTrackCanvas() {
   const W = trackCanvas.width, H = trackCanvas.height;
   trackCtx.clearRect(0, 0, W, H);
@@ -1299,12 +1313,11 @@ trackCanvas.addEventListener('click', e => {
   }
 });
 
-// Periodic tracker box update from video (box drawn server-side on frame)
-// No need for separate WS update - box is rendered on MJPEG frame itself
-// But we still need to keep canvas X button in sync
-setInterval(() => {
-  if (trackerActive) renderTrackCanvas();
-}, 100);
+// Resize canvas on window resize
+window.addEventListener('resize', () => {
+  resizeTrackCanvas();
+  if (trackerActive && trackerBox) renderTrackCanvas();
+});
 </script>
 </body>
 </html>

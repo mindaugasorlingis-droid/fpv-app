@@ -448,24 +448,24 @@ def video_capture_loop():
                             ok, bbox = tracker.update(frame)
                             if ok:
                                 tx, ty, tw, th = [int(v) for v in bbox]
-                                tracker_bbox = {
+                                nb = {
                                     'x': tx / w, 'y': ty / h,
                                     'w': tw / w, 'h': th / h,
-                                    'ok': True
+                                    'ok': True, 'active': True
                                 }
-                                # Draw box on frame
-                                cv2.rectangle(frame, (tx, ty), (tx+tw, ty+th), (190, 214, 0), 2)
-                                # Corner dots
-                                for cx, cy in [(tx, ty), (tx+tw, ty), (tx, ty+th), (tx+tw, ty+th)]:
-                                    cv2.circle(frame, (cx, cy), 4, (190, 214, 0), -1)
+                                tracker_bbox = nb
+                                # Emit to frontend canvas
+                                socketio.emit('tracker_box', nb)
                             else:
                                 tracker_bbox = {'ok': False}
-                                socketio.emit('tracker_status', {'active': True, 'ok': False})
+                                socketio.emit('tracker_box', {'ok': False, 'active': True})
 
+                    # Save raw frame BEFORE encoding (for tracker init)
+                    with video_lock:
+                        raw_frame = frame.copy()
                     _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
                     with video_lock:
                         video_frame = jpeg.tobytes()
-                        raw_frame = frame.copy()
 
                 socketio.emit('video_status', {'connected': False, 'error': 'Stream lost'})
         except Exception as e:
