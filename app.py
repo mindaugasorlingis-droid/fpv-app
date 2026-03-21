@@ -40,8 +40,8 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 # Global MAVLink connection and state
 mav_connection = None
 mav_lock = threading.Lock()
-mav_connect_string = 'udpci:192.168.144.12:19856'
-mav_status = {'connected': False, 'connecting': False, 'error': None, 'connection_string': 'udpci:192.168.144.12:19856'}
+mav_connect_string = 'udpout:192.168.144.12:19856'
+mav_status = {'connected': False, 'connecting': False, 'error': None, 'connection_string': 'udpout:192.168.144.12:19856'}
 mav_stop_event = threading.Event()
 
 telemetry = {
@@ -222,8 +222,8 @@ def api_connect():
 
     # Build connection string
     baud = int(data.get('baud', 115200))
-    if conn_type == 'udpci':
-        cs = f'udpci:{ip}:{port}'
+    if conn_type == 'udpci' or conn_type == 'udpout':
+        cs = f'udpout:{ip}:{port}'
     elif conn_type == 'udpin':
         cs = f'udpin:0.0.0.0:{port}'
     elif conn_type == 'tcp':
@@ -231,7 +231,7 @@ def api_connect():
     elif conn_type == 'serial':
         cs = f'{port},{baud}'  # pymavlink serial format
     else:
-        cs = f'udpci:{ip}:{port}'
+        cs = f'udpout:{ip}:{port}'
 
     # Stop current connection thread
     mav_stop_event.set()
