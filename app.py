@@ -397,12 +397,22 @@ GSTREAMER_PIPELINE = (
 )
 
 video_frame = None
+raw_frame = None  # Unencoded frame for tracker
+frame_w = 640
+frame_h = 480
 video_lock = threading.Lock()
 video_running = False
 video_active = False  # Manual control - False = stopped
 
+# ── Object Tracker ────────────────────────────────────────────────────────────
+tracker = None
+tracker_lock = threading.Lock()
+tracker_bbox = None   # (x, y, w, h) normalized 0..1
+tracker_active = False
+
 def video_capture_loop():
-    global video_frame, video_running, video_active
+    global video_frame, raw_frame, frame_w, frame_h, video_running, video_active
+    global tracker, tracker_bbox, tracker_active
     video_running = True
     while video_running:
         if not video_active:
@@ -426,9 +436,34 @@ def video_capture_loop():
                     ret, frame = cap.read()
                     if not ret:
                         break
+                    h, w = frame.shape[:2]
+                    frame_w, frame_h = w, h
+
+                    # Run tracker
+                    with tracker_lock:
+                        if tracker_active and tracker is not None:
+                            ok, bbox = tracker.update(frame)
+                            if ok:
+                                tx, ty, tw, th = [int(v) for v in bbox]
+                                tracker_bbox = {
+                                    'x': tx / w, 'y': ty / h,
+                                    'w': tw / w, 'h': th / h,
+                                    'ok': True
+                                }
+                                # Draw box on frame
+                                cv2.rectangle(frame, (tx, ty), (tx+tw, ty+th), (190, 214, 0), 2)
+                                # Corner dots
+                                for cx, cy in [(tx, ty), (tx+tw, ty), (tx, ty+th), (tx+tw, ty+th)]:
+                                    cv2.circle(frame, (cx, cy), 4, (190, 214, 0), -1)
+                            else:
+                                tracker_bbox = {'ok': False}
+                                socketio.emit('tracker_status', {'active': True, 'ok': False})
+
                     _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
                     with video_lock:
                         video_frame = jpeg.tobytes()
+                        raw_frame = frame.copy()
+
                 socketio.emit('video_status', {'connected': False, 'error': 'Stream lost'})
         except Exception as e:
             print(f"Video capture error: {e}")
@@ -439,6 +474,7 @@ def video_capture_loop():
                 cap.release()
             with video_lock:
                 video_frame = None
+                raw_frame = None
         time.sleep(1)
 
 
@@ -478,6 +514,56 @@ def api_video_stop():
 @app.route('/api/video/status', methods=['GET'])
 def api_video_status():
     return jsonify({'active': video_active, 'url': RTSP_URL})
+
+
+@app.route('/api/tracker/start', methods=['POST'])
+def api_tracker_start():
+    global tracker, tracker_active, tracker_bbox
+    data = request.get_json() or {}
+    # bbox in normalized coords 0..1
+    nx = float(data.get('x', 0))
+    ny = float(data.get('y', 0))
+    nw = float(data.get('w', 0.1))
+    nh = float(data.get('h', 0.1))
+    with video_lock:
+        frame = raw_frame
+    if frame is None:
+        return jsonify({'error': 'No video frame available'}), 400
+    if not CV2_AVAILABLE:
+        return jsonify({'error': 'cv2 not available'}), 400
+    h, w = frame.shape[:2]
+    x = int(nx * w)
+    y = int(ny * h)
+    bw = int(nw * w)
+    bh = int(nh * h)
+    x = max(0, min(x, w - 1))
+    y = max(0, min(y, h - 1))
+    bw = max(10, min(bw, w - x))
+    bh = max(10, min(bh, h - y))
+    with tracker_lock:
+        try:
+            t = cv2.TrackerCSRT_create()
+        except AttributeError:
+            try:
+                t = cv2.legacy.TrackerCSRT_create()
+            except Exception:
+                t = cv2.TrackerKCF_create()
+        t.init(frame, (x, y, bw, bh))
+        tracker = t
+        tracker_active = True
+        tracker_bbox = {'x': nx, 'y': ny, 'w': nw, 'h': nh, 'ok': True}
+    return jsonify({'ok': True})
+
+
+@app.route('/api/tracker/stop', methods=['POST'])
+def api_tracker_stop():
+    global tracker, tracker_active, tracker_bbox
+    with tracker_lock:
+        tracker = None
+        tracker_active = False
+        tracker_bbox = None
+    socketio.emit('tracker_status', {'active': False})
+    return jsonify({'ok': True})
 
 
 if __name__ == '__main__':

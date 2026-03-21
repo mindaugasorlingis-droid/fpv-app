@@ -247,6 +247,7 @@
 <div id="videoWrap">
   <img id="videoEl" src="/video" alt="" onerror="onVideoError()" onload="onVideoLoad()">
   <div id="noSignal">NO VIDEO SIGNAL</div>
+  <canvas id="trackCanvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:all;z-index:15;cursor:crosshair;"></canvas>
 </div>
 
 <!-- OSD -->
@@ -1132,6 +1133,178 @@ function setVideoBtn(active) {
 }
 
 function reconnectVideo() { toggleVideo(); }
+
+// ── OBJECT TRACKER ─────────────────────────────────────────────────────────
+const trackCanvas = document.getElementById('trackCanvas');
+const trackCtx = trackCanvas.getContext('2d');
+let drawing = false;
+let drawStart = null;
+let drawRect = null;
+let trackerActive = false;
+let trackerBox = null;
+
+function resizeTrackCanvas() {
+  const vw = trackCanvas.parentElement;
+  trackCanvas.width = vw.offsetWidth;
+  trackCanvas.height = vw.offsetHeight;
+}
+window.addEventListener('resize', resizeTrackCanvas);
+resizeTrackCanvas();
+
+function getCanvasPos(e) {
+  const r = trackCanvas.getBoundingClientRect();
+  const touch = e.touches ? e.touches[0] : e;
+  return {
+    x: (touch.clientX - r.left) / r.width,
+    y: (touch.clientY - r.top) / r.height
+  };
+}
+
+trackCanvas.addEventListener('mousedown', e => {
+  if (trackerActive) return;
+  drawing = true;
+  drawStart = getCanvasPos(e);
+  drawRect = null;
+  e.preventDefault();
+});
+
+trackCanvas.addEventListener('mousemove', e => {
+  if (!drawing) return;
+  const pos = getCanvasPos(e);
+  drawRect = {
+    x: Math.min(drawStart.x, pos.x),
+    y: Math.min(drawStart.y, pos.y),
+    w: Math.abs(pos.x - drawStart.x),
+    h: Math.abs(pos.y - drawStart.y)
+  };
+  renderTrackCanvas();
+  e.preventDefault();
+});
+
+trackCanvas.addEventListener('mouseup', async e => {
+  if (!drawing) return;
+  drawing = false;
+  if (!drawRect || drawRect.w < 0.02 || drawRect.h < 0.02) {
+    drawRect = null;
+    renderTrackCanvas();
+    return;
+  }
+  // Send to backend
+  const r = await fetch('/api/tracker/start', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(drawRect)
+  });
+  const d = await r.json();
+  if (d.ok) {
+    trackerActive = true;
+    trackerBox = drawRect;
+  } else {
+    drawRect = null;
+    alert('Tracker klaida: ' + (d.error || 'Nepavyko'));
+  }
+  renderTrackCanvas();
+  e.preventDefault();
+});
+
+async function stopTracker() {
+  await fetch('/api/tracker/stop', {method: 'POST'});
+  trackerActive = false;
+  trackerBox = null;
+  drawRect = null;
+  renderTrackCanvas();
+}
+
+socket.on('tracker_status', d => {
+  if (!d.active || !d.ok) {
+    if (trackerActive) {
+      trackerActive = false;
+      trackerBox = null;
+      drawRect = null;
+      renderTrackCanvas();
+    }
+  }
+});
+
+function renderTrackCanvas() {
+  const W = trackCanvas.width, H = trackCanvas.height;
+  trackCtx.clearRect(0, 0, W, H);
+
+  const box = trackerBox || drawRect;
+  if (!box) return;
+
+  const x = box.x * W, y = box.y * H, w = box.w * W, h = box.h * H;
+  const GREEN = '#BED600';
+  const RED = '#FF4444';
+  const color = trackerActive ? GREEN : 'rgba(190,214,0,0.6)';
+
+  // Box
+  trackCtx.strokeStyle = color;
+  trackCtx.lineWidth = 2;
+  trackCtx.setLineDash(trackerActive ? [] : [6, 3]);
+  trackCtx.strokeRect(x, y, w, h);
+  trackCtx.setLineDash([]);
+
+  // Corner brackets
+  const cLen = Math.min(w, h) * 0.2;
+  trackCtx.strokeStyle = color;
+  trackCtx.lineWidth = 3;
+  [[x, y, 1, 1], [x+w, y, -1, 1], [x, y+h, 1, -1], [x+w, y+h, -1, -1]].forEach(([cx, cy, dx, dy]) => {
+    trackCtx.beginPath();
+    trackCtx.moveTo(cx + dx * cLen, cy);
+    trackCtx.lineTo(cx, cy);
+    trackCtx.lineTo(cx, cy + dy * cLen);
+    trackCtx.stroke();
+  });
+
+  // X button (top-right corner)
+  if (trackerActive) {
+    const bx = x + w - 1, by = y - 1;
+    const bs = 18;
+    trackCtx.fillStyle = 'rgba(0,0,0,0.7)';
+    trackCtx.fillRect(bx, by - bs, bs, bs);
+    trackCtx.strokeStyle = RED;
+    trackCtx.lineWidth = 2;
+    trackCtx.strokeRect(bx, by - bs, bs, bs);
+    trackCtx.fillStyle = RED;
+    trackCtx.font = 'bold 13px Arial';
+    trackCtx.textAlign = 'center';
+    trackCtx.textBaseline = 'middle';
+    trackCtx.fillText('✕', bx + bs/2, by - bs/2);
+
+    // TRACKING label
+    trackCtx.fillStyle = 'rgba(0,0,0,0.6)';
+    trackCtx.fillRect(x, y - 18, 80, 16);
+    trackCtx.fillStyle = GREEN;
+    trackCtx.font = 'bold 11px Courier New';
+    trackCtx.textAlign = 'left';
+    trackCtx.textBaseline = 'middle';
+    trackCtx.fillText('TRACKING', x + 4, y - 10);
+  }
+}
+
+// Click on X to stop tracker
+trackCanvas.addEventListener('click', e => {
+  if (!trackerActive || !trackerBox) return;
+  const W = trackCanvas.width, H = trackCanvas.height;
+  const pos = getCanvasPos(e);
+  const px = pos.x * W, py = pos.y * H;
+  const box = trackerBox;
+  const bx = box.x * W + box.w * W - 1;
+  const by = box.y * H - 1;
+  const bs = 18;
+  if (px >= bx && px <= bx + bs && py >= by - bs && py <= by) {
+    stopTracker();
+    e.preventDefault();
+  }
+});
+
+// Periodic tracker box update from video (box drawn server-side on frame)
+// No need for separate WS update - box is rendered on MJPEG frame itself
+// But we still need to keep canvas X button in sync
+setInterval(() => {
+  if (trackerActive) renderTrackCanvas();
+}, 100);
 </script>
 </body>
 </html>
