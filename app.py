@@ -360,38 +360,47 @@ GSTREAMER_PIPELINE = (
 video_frame = None
 video_lock = threading.Lock()
 video_running = False
+video_active = False  # Manual control - False = stopped
 
 def video_capture_loop():
-    global video_frame, video_running
+    global video_frame, video_running, video_active
     video_running = True
     while video_running:
+        if not video_active:
+            time.sleep(0.5)
+            continue
         cap = None
         try:
             if CV2_AVAILABLE:
-                # Direct RTSP via FFMPEG (works on Windows without GStreamer)
                 cap = cv2.VideoCapture(RTSP_URL, cv2.CAP_FFMPEG)
                 if not cap.isOpened():
-                    # Try without backend hint
                     cap = cv2.VideoCapture(RTSP_URL)
                 if not cap.isOpened():
-                    print(f"Video: cannot open {RTSP_URL}, retrying in 5s...")
-                    time.sleep(5)
+                    print(f"Video: cannot open {RTSP_URL}")
+                    video_active = False
+                    socketio.emit('video_status', {'connected': False, 'error': 'Cannot connect to RTSP'})
                     continue
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-                print("Video: connected to RTSP stream")
-                while video_running:
+                print("Video: connected")
+                socketio.emit('video_status', {'connected': True, 'error': None})
+                while video_running and video_active:
                     ret, frame = cap.read()
                     if not ret:
                         break
                     _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
                     with video_lock:
                         video_frame = jpeg.tobytes()
+                socketio.emit('video_status', {'connected': False, 'error': 'Stream lost'})
         except Exception as e:
             print(f"Video capture error: {e}")
+            socketio.emit('video_status', {'connected': False, 'error': str(e)})
+            video_active = False
         finally:
             if cap:
                 cap.release()
-        time.sleep(3)
+            with video_lock:
+                video_frame = None
+        time.sleep(1)
 
 
 def gen_frames():
@@ -410,11 +419,34 @@ def video_feed():
     return Response(stream_with_context(gen_frames()),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
 
+@app.route('/api/video/start', methods=['POST'])
+def api_video_start():
+    global video_active, RTSP_URL
+    data = request.get_json() or {}
+    if data.get('url'):
+        RTSP_URL = data['url']
+    video_active = True
+    return jsonify({'ok': True, 'url': RTSP_URL})
+
+@app.route('/api/video/stop', methods=['POST'])
+def api_video_stop():
+    global video_active
+    video_active = False
+    with video_lock:
+        pass
+    return jsonify({'ok': True})
+
+@app.route('/api/video/status', methods=['GET'])
+def api_video_status():
+    return jsonify({'active': video_active, 'url': RTSP_URL})
+
 
 if __name__ == '__main__':
-    # Start video capture
+    # Start video capture thread (waits for manual connect)
     if CV2_AVAILABLE:
         threading.Thread(target=video_capture_loop, daemon=True).start()
+    else:
+        print("cv2 not available - video disabled")
 
     if MAVLINK_AVAILABLE:
         mav_thread = threading.Thread(target=connect_mavlink, daemon=True)

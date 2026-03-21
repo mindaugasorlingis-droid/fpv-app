@@ -332,13 +332,13 @@
 
 </div>
 
-<!-- VIDEO RECONNECT BUTTON -->
-<button id="videoreconnectBtn" onclick="reconnectVideo()" title="Perkrauti video signalą" style="
+<!-- VIDEO CONNECT BUTTON -->
+<button id="videoreconnectBtn" onclick="toggleVideo()" title="Prijungti / atjungti video" style="
   position:fixed; bottom:16px; left:16px;
   z-index:50; pointer-events:all;
   background:rgba(0,0,0,0.55);
-  border:1.5px solid #BED600;
-  color:#BED600;
+  border:1.5px solid #e74c3c;
+  color:#e74c3c;
   border-radius:6px;
   padding:7px 14px;
   font-size:13px;
@@ -347,8 +347,8 @@
   letter-spacing:0.08em;
   cursor:pointer;
   transition:all 0.15s;
-" onmouseenter="this.style.background='rgba(190,214,0,0.15)'"
-   onmouseleave="this.style.background='rgba(0,0,0,0.55)'">⟳ VIDEO</button>
+" onmouseenter="this.style.opacity='0.8'"
+   onmouseleave="this.style.opacity='1'">▶ VIDEO</button>
 
 <!-- CONTROLS PANEL TOGGLE -->
 <button id="menuBtn" onclick="togglePanel()">&#9776;</button>
@@ -1034,41 +1034,64 @@ async function apiRestartMission() {
 // ── MJPEG VIDEO ────────────────────────────────────────────────────────────
 const video = document.getElementById('videoEl');
 const noSig = document.getElementById('noSignal');
+let videoConnected = false;
 
 function onVideoLoad() {
   noSig.style.display = 'none';
-  updateVideoBtn(true);
+  setVideoBtn(true);
 }
 
 function onVideoError() {
   noSig.style.display = 'block';
-  updateVideoBtn(false);
-  setTimeout(reconnectVideo, 5000);
+  setVideoBtn(false);
+  videoConnected = false;
 }
 
-function reconnectVideo() {
-  const btn = document.getElementById('videoreconnectBtn');
-  if (btn) { btn.textContent = '⟳'; btn.style.opacity = '0.5'; btn.disabled = true; }
-  noSig.style.display = 'block';
-  video.src = '';
-  setTimeout(() => {
-    video.src = '/video?' + Date.now();
-    if (btn) {
-      setTimeout(() => {
-        btn.textContent = '⟳ VIDEO';
-        btn.style.opacity = '1';
-        btn.disabled = false;
-      }, 2000);
-    }
-  }, 500);
+socket.on('video_status', function(d) {
+  if (d.connected) {
+    noSig.style.display = 'none';
+    setVideoBtn(true);
+    videoConnected = true;
+  } else {
+    noSig.style.display = 'block';
+    setVideoBtn(false);
+    videoConnected = false;
+    video.src = '';
+  }
+});
+
+async function toggleVideo() {
+  if (videoConnected) {
+    // Disconnect
+    await fetch('/api/video/stop', {method: 'POST'});
+    video.src = '';
+    noSig.style.display = 'block';
+    setVideoBtn(false);
+    videoConnected = false;
+  } else {
+    // Connect
+    const btn = document.getElementById('videoreconnectBtn');
+    btn.textContent = '⏳';
+    btn.disabled = true;
+    await fetch('/api/video/start', {method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'});
+    setTimeout(() => {
+      video.src = '/video?' + Date.now();
+      btn.disabled = false;
+    }, 500);
+  }
 }
 
-function updateVideoBtn(active) {
+function setVideoBtn(active) {
   const btn = document.getElementById('videoreconnectBtn');
   if (!btn) return;
+  videoConnected = active;
+  btn.textContent = active ? '■ VIDEO' : '▶ VIDEO';
   btn.style.borderColor = active ? '#BED600' : '#e74c3c';
   btn.style.color = active ? '#BED600' : '#e74c3c';
+  btn.disabled = false;
 }
+
+function reconnectVideo() { toggleVideo(); }
 </script>
 </body>
 </html>
