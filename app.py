@@ -134,8 +134,16 @@ def connect_mavlink(connection_string=None):
         mav_status['connection_string'] = cs
 
         conn = mavutil.mavlink_connection(cs, source_system=255, source_component=0)
-        conn.wait_heartbeat(timeout=15)
-        print(f"MAVLink connected: sys={conn.target_system}")
+        print("Waiting for heartbeat...")
+        conn.wait_heartbeat(timeout=30)
+        print(f"MAVLink connected: sys={conn.target_system} comp={conn.target_component}")
+
+        # Request all data streams (like Mission Planner does)
+        conn.mav.request_data_stream_send(
+            conn.target_system, conn.target_component,
+            mavutil.mavlink.MAV_DATA_STREAM_ALL, 10, 1
+        )
+
         with mav_lock:
             mav_connection = conn
         mav_status['connected'] = True
@@ -211,6 +219,23 @@ def receive_loop(conn):
         except Exception as e:
             print(f"MAVLink receive error: {e}")
             break
+
+
+def gcs_heartbeat_loop():
+    """Send GCS heartbeat every 1s — required for drone to accept commands."""
+    while True:
+        try:
+            with mav_lock:
+                conn = mav_connection
+            if conn:
+                conn.mav.heartbeat_send(
+                    mavutil.mavlink.MAV_TYPE_GCS,
+                    mavutil.mavlink.MAV_AUTOPILOT_INVALID,
+                    0, 0, 0
+                )
+        except Exception:
+            pass
+        time.sleep(1)
 
 
 def emit_telemetry_loop():
@@ -690,6 +715,9 @@ if __name__ == '__main__':
     # MAVLink: manual connect only — do NOT auto-connect on startup
     if not MAVLINK_AVAILABLE:
         print("MAVLink not available - running without telemetry")
+
+    # GCS heartbeat — needed so drone accepts commands
+    threading.Thread(target=gcs_heartbeat_loop, daemon=True).start()
 
     telem_thread = threading.Thread(target=emit_telemetry_loop, daemon=True)
     telem_thread.start()
