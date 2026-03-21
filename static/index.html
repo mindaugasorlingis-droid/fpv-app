@@ -398,26 +398,52 @@
 
   <h3>MAVLink ryšys</h3>
   <div style="display:flex;flex-direction:column;gap:6px;">
-    <input id="mavConnString" type="text"
-      placeholder="udpin:0.0.0.0:19856"
-      value="udpin:0.0.0.0:19856"
-      oninput="onConnStringChange()"
-      style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;font-family:'Courier New',monospace;"/>
-    <div id="serialOptions" style="display:none;flex-direction:column;gap:4px;">
-      <div id="comPortWrap">
-        <select id="comPortSelect" onchange="onComPortSelect()" style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;width:100%;">
-          <option value="">-- Pasirinkti COM portą --</option>
-        </select>
-        <button onclick="refreshComPorts()" style="margin-top:4px;width:100%;background:#2a2a3e;color:#888;border:1px solid #444;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;">↺ Atnaujinti portų sąrašą</button>
-      </div>
-      <select id="connBaud" onchange="onBaudChange()" style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;">
-        <option value="57600">57600</option>
-        <option value="115200" selected>115200</option>
+
+    <!-- Connection type — like Mission Planner -->
+    <select id="mpConnType" onchange="mpTypeChange()" style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;">
+      <option value="udpci">UDP (UDPCI) — klausyti</option>
+      <option value="udp">UDP — siųsti į droną</option>
+      <option value="tcp">TCP</option>
+      <option value="serial">Serial/USB</option>
+      <option value="bluetooth">Bluetooth</option>
+    </select>
+
+    <!-- UDP / TCP fields -->
+    <div id="mpUdpFields">
+      <input id="mpHost" type="text" value="0.0.0.0" placeholder="IP arba 0.0.0.0"
+        style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;width:100%;box-sizing:border-box;margin-bottom:4px;"/>
+      <input id="mpPort" type="text" value="19856" placeholder="Port"
+        style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;width:100%;box-sizing:border-box;"/>
+    </div>
+
+    <!-- Serial fields -->
+    <div id="mpSerialFields" style="display:none;flex-direction:column;gap:4px;">
+      <select id="comPortSelect" onchange="onComPortSelect()" style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;">
+        <option value="">-- COM portas --</option>
+      </select>
+      <button onclick="refreshComPorts()" style="background:#2a2a3e;color:#888;border:1px solid #444;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;">↺ Atnaujinti</button>
+      <select id="connBaud" style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;">
+        <option value="1200">1200</option>
+        <option value="2400">2400</option>
+        <option value="4800">4800</option>
+        <option value="9600">9600</option>
+        <option value="19200">19200</option>
+        <option value="38400">38400</option>
+        <option value="57600" selected>57600</option>
+        <option value="111100">111100</option>
+        <option value="115200">115200</option>
         <option value="230400">230400</option>
         <option value="460800">460800</option>
         <option value="921600">921600</option>
       </select>
     </div>
+
+    <!-- Bluetooth field -->
+    <div id="mpBtFields" style="display:none;">
+      <input id="mpBtAddr" type="text" placeholder="Bluetooth adresas arba COM portas"
+        style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;width:100%;box-sizing:border-box;"/>
+    </div>
+
     <div style="display:flex;gap:6px;">
       <button class="btn btn-arm" style="flex:1;font-size:12px;" onclick="mavConnect()">⚡ Jungti</button>
       <button class="btn btn-disarm" style="flex:1;font-size:12px;" onclick="mavDisconnect()">✕ Atjungti</button>
@@ -483,30 +509,53 @@ function updateMavStatus(s) {
 }
 
 // ── MAVLink connection string helpers ─────────────────────────────────────
-function isSerialString(s) {
-  return s.startsWith('COM') || s.startsWith('/dev/');
-}
-
-function onConnStringChange() {
-  const s = document.getElementById('mavConnString').value.trim();
-  const serialOpts = document.getElementById('serialOptions');
-  if (isSerialString(s)) {
-    serialOpts.style.display = 'flex';
+// ── Mission Planner style connection ──────────────────────────────────────
+function mpTypeChange() {
+  const t = document.getElementById('mpConnType').value;
+  document.getElementById('mpUdpFields').style.display   = (t==='udpci'||t==='udp'||t==='tcp') ? 'block' : 'none';
+  document.getElementById('mpSerialFields').style.display = (t==='serial') ? 'flex' : 'none';
+  document.getElementById('mpBtFields').style.display    = (t==='bluetooth') ? 'block' : 'none';
+  // Set sensible defaults
+  if (t==='udpci') {
+    document.getElementById('mpHost').value = '0.0.0.0';
+    document.getElementById('mpPort').value = '19856';
+    document.getElementById('mpHost').disabled = true;
+  } else if (t==='udp') {
+    document.getElementById('mpHost').value = '192.168.144.12';
+    document.getElementById('mpPort').value = '19856';
+    document.getElementById('mpHost').disabled = false;
+  } else if (t==='tcp') {
+    document.getElementById('mpHost').value = '192.168.144.12';
+    document.getElementById('mpPort').value = '5760';
+    document.getElementById('mpHost').disabled = false;
+  } else if (t==='serial') {
     refreshComPorts();
-  } else {
-    serialOpts.style.display = 'none';
   }
 }
+// Init on load
+mpTypeChange();
 
-function onBaudChange() {
-  // When baud changes, update the connection string if it's a serial-style entry
-  const s = document.getElementById('mavConnString').value.trim();
-  const baud = document.getElementById('connBaud').value;
-  if (isSerialString(s)) {
-    // Strip existing baud suffix if present, append new one
-    const base = s.split(',')[0];
-    document.getElementById('mavConnString').value = base + ',' + baud;
+function buildConnString() {
+  const t = document.getElementById('mpConnType').value;
+  if (t === 'udpci') {
+    const port = document.getElementById('mpPort').value || '19856';
+    return 'udpin:0.0.0.0:' + port;
+  } else if (t === 'udp') {
+    const host = document.getElementById('mpHost').value || '192.168.144.12';
+    const port = document.getElementById('mpPort').value || '19856';
+    return 'udpout:' + host + ':' + port;
+  } else if (t === 'tcp') {
+    const host = document.getElementById('mpHost').value;
+    const port = document.getElementById('mpPort').value || '5760';
+    return 'tcp:' + host + ':' + port;
+  } else if (t === 'serial') {
+    const port = document.getElementById('comPortSelect').value;
+    const baud = document.getElementById('connBaud').value || '57600';
+    return port + ',' + baud;
+  } else if (t === 'bluetooth') {
+    return document.getElementById('mpBtAddr').value;
   }
+  return '';
 }
 
 async function refreshComPorts() {
@@ -519,27 +568,21 @@ async function refreshComPorts() {
     if (ports.length === 0) {
       sel.innerHTML = '<option value="">-- Portų nerasta --</option>';
     } else {
-      sel.innerHTML = '<option value="">-- Pasirinkti --</option>' +
-        ports.map(p => '<option value="' + p.device + '">' + p.device + ' — ' + p.description + '</option>').join('');
-      if (ports.length === 1) { sel.value = ports[0].device; onComPortSelect(); }
+      sel.innerHTML = ports.map(p =>
+        '<option value="' + p.device + '">' + p.device + ' — ' + p.description + '</option>'
+      ).join('');
     }
   } catch(e) {
     sel.innerHTML = '<option value="">-- Klaida --</option>';
   }
 }
 
-function onComPortSelect() {
-  const val = document.getElementById('comPortSelect').value;
-  if (!val) return;
-  const baud = document.getElementById('connBaud').value || '115200';
-  document.getElementById('mavConnString').value = val + ',' + baud;
-}
+function onComPortSelect() {}
 
 async function mavConnect() {
-  const cs = document.getElementById('mavConnString').value.trim();
-  if (!cs) { alert('Įveskite connection string'); return; }
-  const dot = document.getElementById('connDot');
-  dot.style.background = '#f39c12';
+  const cs = buildConnString();
+  if (!cs) { alert('Pasirinkite ryšio tipą ir užpildykite laukus'); return; }
+  document.getElementById('connDot').style.background = '#f39c12';
   document.getElementById('connLabel').textContent = '⏳ Jungiamasi…';
   try {
     const r = await fetch('/api/connect', {
@@ -549,8 +592,9 @@ async function mavConnect() {
     });
     const d = await r.json();
     if (d.ok) {
-      document.getElementById('mavConnStr').textContent = d.connection_string;
+      document.getElementById('mavConnStr').textContent = cs;
     } else {
+      document.getElementById('connLabel').textContent = '✕ ' + (d.error || 'Klaida');
       alert('Klaida: ' + (d.error || 'Nepavyko'));
     }
   } catch(e) { alert('Klaida: ' + e.message); }
