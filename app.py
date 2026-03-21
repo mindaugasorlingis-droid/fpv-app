@@ -40,8 +40,8 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 # Global MAVLink connection and state
 mav_connection = None
 mav_lock = threading.Lock()
-mav_connect_string = 'udp:192.168.144.12:19856'
-mav_status = {'connected': False, 'connecting': False, 'error': None, 'connection_string': 'udp:192.168.144.12:19856'}
+mav_connect_string = 'udpout:192.168.144.12:19856'
+mav_status = {'connected': False, 'connecting': False, 'error': None, 'connection_string': 'udpout:192.168.144.12:19856'}
 mav_manual_only = True  # No auto-connect on startup
 mav_stop_event = threading.Event()
 
@@ -260,16 +260,18 @@ def api_connect():
 
     # Build connection string
     baud = int(data.get('baud', 115200))
-    if conn_type == 'udpci' or conn_type == 'udpout':
-        cs = f'udp:{ip}:{port}'  # pymavlink universal UDP format (works on Windows)
+    if conn_type in ('udpci', 'udpout'):
+        # udpout: sends to remote IP, does NOT bind locally → no WINERROR 10049
+        cs = f'udpout:{ip}:{port}'
     elif conn_type == 'udpin':
+        # Listen on local port (bind to 0.0.0.0)
         cs = f'udpin:0.0.0.0:{port}'
     elif conn_type == 'tcp':
         cs = f'tcp:{ip}:{port}'
     elif conn_type == 'serial':
-        cs = f'{port},{baud}'  # pymavlink serial format
+        cs = f'{port},{baud}'
     else:
-        cs = f'udp:{ip}:{port}'
+        cs = f'udpout:{ip}:{port}'
 
     # Stop current connection thread
     mav_stop_event.set()
