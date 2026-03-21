@@ -40,8 +40,8 @@ socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 # Global MAVLink connection and state
 mav_connection = None
 mav_lock = threading.Lock()
-mav_connect_string = 'udpout:192.168.144.12:19856'
-mav_status = {'connected': False, 'connecting': False, 'error': None, 'connection_string': 'udpout:192.168.144.12:19856'}
+mav_connect_string = 'udp:192.168.144.12:19856'
+mav_status = {'connected': False, 'connecting': False, 'error': None, 'connection_string': 'udp:192.168.144.12:19856'}
 mav_stop_event = threading.Event()
 
 telemetry = {
@@ -223,7 +223,7 @@ def api_connect():
     # Build connection string
     baud = int(data.get('baud', 115200))
     if conn_type == 'udpci' or conn_type == 'udpout':
-        cs = f'udpout:{ip}:{port}'
+        cs = f'udp:{ip}:{port}'  # pymavlink universal UDP format (works on Windows)
     elif conn_type == 'udpin':
         cs = f'udpin:0.0.0.0:{port}'
     elif conn_type == 'tcp':
@@ -231,7 +231,7 @@ def api_connect():
     elif conn_type == 'serial':
         cs = f'{port},{baud}'  # pymavlink serial format
     else:
-        cs = f'udpout:{ip}:{port}'
+        cs = f'udp:{ip}:{port}'
 
     # Stop current connection thread
     mav_stop_event.set()
@@ -368,18 +368,17 @@ def video_capture_loop():
         cap = None
         try:
             if CV2_AVAILABLE:
-                # Try GStreamer first, fallback to direct RTSP
-                try:
-                    cap = cv2.VideoCapture(GSTREAMER_PIPELINE, cv2.CAP_GSTREAMER)
-                    if not cap.isOpened():
-                        raise Exception("GStreamer failed")
-                except Exception:
-                    cap = cv2.VideoCapture(RTSP_URL, cv2.CAP_FFMPEG)
-
+                # Direct RTSP via FFMPEG (works on Windows without GStreamer)
+                cap = cv2.VideoCapture(RTSP_URL, cv2.CAP_FFMPEG)
                 if not cap.isOpened():
+                    # Try without backend hint
+                    cap = cv2.VideoCapture(RTSP_URL)
+                if not cap.isOpened():
+                    print(f"Video: cannot open {RTSP_URL}, retrying in 5s...")
                     time.sleep(5)
                     continue
-
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                print("Video: connected to RTSP stream")
                 while video_running:
                     ret, frame = cap.read()
                     if not ret:
