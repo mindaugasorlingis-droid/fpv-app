@@ -117,8 +117,46 @@ GPS_FIX_TYPES = {
 }
 
 
+def make_connection(cs):
+    """Build pymavlink connection — Windows-safe."""
+    import socket as _socket
+
+    if cs.startswith('udpout:') or cs.startswith('udp:'):
+        # Windows-safe UDP out: use blocking socket + sendto (no connect)
+        parts = cs.split(':', 2)
+        host = parts[1].lstrip('/')
+        port = int(parts[2])
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        sock.bind(('', 0))  # bind to random local port
+        sock.setblocking(True)
+        sock.settimeout(1.0)
+        # Wrap with mavudp-like object via mavlink_connection using udpin trick:
+        # We'll use a local loopback bridge approach — simplest: use mavfile directly
+        # Actually easiest: just use udpin on a local port and bridge
+        # SIMPLEST FIX: patch setblocking AFTER mavudp init
+        conn = mavutil.mavlink_connection(
+            f'udpin:0.0.0.0:0',  # bind random port
+            source_system=255, source_component=0
+        )
+        # Replace the internal socket destination
+        conn.port.close()
+        conn.port = sock
+        conn.udp_server = False
+        conn.destination_addr = (host, port)
+        conn.resolved_destination_addr = None
+        return conn
+
+    elif cs.startswith('udpin:'):
+        return mavutil.mavlink_connection(cs, source_system=255, source_component=0)
+
+    else:
+        # TCP, serial, etc — use directly
+        return mavutil.mavlink_connection(cs, source_system=255, source_component=0)
+
+
 def connect_mavlink(connection_string=None):
-    """Connect to MAVLink using raw connection string — single attempt, no auto-retry."""
+    """Connect to MAVLink — single attempt, no auto-retry."""
     global mav_connection, mav_connect_string, mav_status, mav_stop_event
 
     if connection_string:
@@ -133,12 +171,12 @@ def connect_mavlink(connection_string=None):
         mav_status['error'] = None
         mav_status['connection_string'] = cs
 
-        conn = mavutil.mavlink_connection(cs, source_system=255, source_component=0)
+        conn = make_connection(cs)
         print("Waiting for heartbeat...")
         conn.wait_heartbeat(timeout=30)
         print(f"MAVLink connected: sys={conn.target_system} comp={conn.target_component}")
 
-        # Request all data streams (like Mission Planner does)
+        # Request all data streams (like Mission Planner)
         conn.mav.request_data_stream_send(
             conn.target_system, conn.target_component,
             mavutil.mavlink.MAV_DATA_STREAM_ALL, 10, 1
