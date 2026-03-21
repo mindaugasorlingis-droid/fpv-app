@@ -39,6 +39,8 @@ jobs:
         $bat += 'pause' + "`r`n"
         Set-Content -Path dist\START.bat -Value $bat -Encoding ASCII
         Copy-Item mediamtx.yml dist\mediamtx.yml -ErrorAction SilentlyContinue
+        Copy-Item backbone.onnx dist\backbone.onnx -ErrorAction SilentlyContinue
+        Copy-Item neckhead.onnx dist\neckhead.onnx -ErrorAction SilentlyContinue
         Compress-Archive -Path dist\* -DestinationPath FPV-GroundStation-Windows.zip
 
     - name: Upload artifact

@@ -8,6 +8,7 @@ import time
 import os
 import sys
 import subprocess
+import numpy as np
 from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
 from flask_socketio import SocketIO, emit
 
@@ -470,7 +471,8 @@ def on_disconnect():
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 # ─── Video Stream ─────────────────────────────────────────────────────────────
-RTSP_URL = 'rtsp://192.168.144.25:8554/main.264'
+RTSP_URL = os.path.expanduser('~/fpv-app/test_video.mp4')  # TEST: local video
+# RTSP_URL = 'rtsp://192.168.144.25:8554/main.264'  # Production
 
 video_frame = None
 raw_frame = None  # Unencoded frame for tracker
@@ -486,6 +488,99 @@ tracker = None
 tracker_lock = threading.Lock()
 tracker_bbox = None   # (x, y, w, h) normalized 0..1
 tracker_active = False
+
+
+class OpticalFlowTracker:
+    """Robust optical flow tracker with adaptive re-detection."""
+    def __init__(self, frame, bbox):
+        self.bbox = list(bbox)  # [x, y, w, h] pixels
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        x, y, w, h = [int(v) for v in bbox]
+        roi = gray[y:y+h, x:x+w]
+        pts = cv2.goodFeaturesToTrack(roi, maxCorners=100,
+                                       qualityLevel=0.01, minDistance=3)
+        if pts is not None:
+            pts[:, :, 0] += x
+            pts[:, :, 1] += y
+            self.pts = pts
+        else:
+            # Fallback: grid of points in bbox
+            grid = []
+            for gx in range(x+5, x+w-5, 8):
+                for gy in range(y+5, y+h-5, 8):
+                    grid.append([[float(gx), float(gy)]])
+            self.pts = np.array(grid, dtype=np.float32) if grid else None
+        self.prev_gray = gray
+        self.lost_frames = 0
+
+    def update(self, frame):
+        import numpy as np
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        if self.pts is None or len(self.pts) < 3:
+            self.prev_gray = gray
+            self.lost_frames += 1
+            return False, self.bbox
+
+        # Track points
+        pts2, status, _ = cv2.calcOpticalFlowPyrLK(
+            self.prev_gray, gray, self.pts, None,
+            winSize=(21, 21), maxLevel=3,
+            criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
+        )
+
+        good_new = pts2[status.flatten() == 1].reshape(-1, 2)
+        good_old = self.pts[status.flatten() == 1].reshape(-1, 2)
+
+        if len(good_new) < 3:
+            self.lost_frames += 1
+            self.prev_gray = gray
+            # Try re-detect in expanded area
+            x, y, w, h = [int(v) for v in self.bbox]
+            pad = int(max(w, h) * 0.5)
+            rx = max(0, x - pad)
+            ry = max(0, y - pad)
+            rw = w + pad * 2
+            rh = h + pad * 2
+            roi = gray[ry:ry+rh, rx:rx+rw]
+            pts = cv2.goodFeaturesToTrack(roi, maxCorners=50,
+                                           qualityLevel=0.01, minDistance=4)
+            if pts is not None:
+                pts[:, :, 0] += rx
+                pts[:, :, 1] += ry
+                self.pts = pts
+                self.lost_frames = 0
+            return self.lost_frames <= 5, self.bbox
+
+        # Compute translation
+        dx = float(np.median(good_new[:, 0] - good_old[:, 0]))
+        dy = float(np.median(good_new[:, 1] - good_old[:, 1]))
+
+        # Update bbox
+        self.bbox[0] += dx
+        self.bbox[1] += dy
+
+        # Keep bbox in frame
+        fh, fw = frame.shape[:2]
+        self.bbox[0] = max(0, min(self.bbox[0], fw - self.bbox[2]))
+        self.bbox[1] = max(0, min(self.bbox[1], fh - self.bbox[3]))
+
+        self.pts = good_new.reshape(-1, 1, 2).astype(np.float32)
+        self.prev_gray = gray
+        self.lost_frames = 0
+
+        # Periodically refresh feature points
+        if len(self.pts) < 10:
+            x, y, w, h = [int(v) for v in self.bbox]
+            roi = gray[y:y+h, x:x+w]
+            pts = cv2.goodFeaturesToTrack(roi, maxCorners=80,
+                                           qualityLevel=0.01, minDistance=3)
+            if pts is not None:
+                pts[:, :, 0] += x
+                pts[:, :, 1] += y
+                self.pts = pts
+
+        return True, tuple(self.bbox)
 
 # ── YOLO detections ───────────────────────────────────────────────────────────
 yolo_detections = []          # list of {x, y, w, h, conf} normalized 0..1
@@ -581,10 +676,25 @@ def video_capture_loop():
                 cap.set(cv2.CAP_PROP_FPS, 30)
                 print("Video: connected")
                 socketio.emit('video_status', {'connected': True, 'error': None, 'w': frame_w, 'h': frame_h})
+                fps = cap.get(cv2.CAP_PROP_FPS) or 30
+                frame_delay = 1.0 / fps
+                last_frame_time = time.time()
+
                 while video_running and video_active:
                     ret, frame = cap.read()
                     if not ret:
-                        break
+                        # Loop video file
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        ret, frame = cap.read()
+                        if not ret:
+                            break
+
+                    # FPS throttle
+                    now = time.time()
+                    elapsed = now - last_frame_time
+                    if elapsed < frame_delay:
+                        time.sleep(frame_delay - elapsed)
+                    last_frame_time = time.time()
                     h, w = frame.shape[:2]
                     if w != frame_w or h != frame_h:
                         frame_w, frame_h = w, h
@@ -668,6 +778,10 @@ def api_video_stop():
 def api_video_status():
     return jsonify({'active': video_active, 'url': RTSP_URL})
 
+@app.route('/api/video/dims', methods=['GET'])
+def api_video_dims():
+    return jsonify({'w': frame_w, 'h': frame_h})
+
 
 @app.route('/api/tracker/start', methods=['POST'])
 def api_tracker_start():
@@ -704,14 +818,30 @@ def api_tracker_start():
     bw = max(10, min(bw, w - x))
     bh = max(10, min(bh, h - y))
     with tracker_lock:
+        t = None
+        # Try NanoTrack first (best for small fast objects)
         try:
-            t = cv2.TrackerCSRT_create()
-        except AttributeError:
-            try:
-                t = cv2.legacy.TrackerCSRT_create()
-            except Exception:
-                t = cv2.TrackerKCF_create()
-        t.init(frame, (x, y, bw, bh))
+            params = cv2.TrackerNano_Params()
+            params.backbone = os.path.join(BASE_DIR, 'backbone.onnx')
+            params.neckhead = os.path.join(BASE_DIR, 'neckhead.onnx')
+            # Also check next to exe (Windows)
+            if not os.path.exists(params.backbone):
+                exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else BASE_DIR
+                params.backbone = os.path.join(exe_dir, 'backbone.onnx')
+                params.neckhead = os.path.join(exe_dir, 'neckhead.onnx')
+            if os.path.exists(params.backbone):
+                t = cv2.TrackerNano_create(params)
+                t.init(frame, (x, y, bw, bh))
+                print("Using NanoTrack")
+        except Exception as e:
+            print(f"NanoTrack failed: {e}")
+            t = None
+
+        # Fallback to OpticalFlow
+        if t is None:
+            t = OpticalFlowTracker(frame, (x, y, bw, bh))
+            print("Using OpticalFlow tracker")
+
         tracker = t
         tracker_active = True
         tracker_bbox = {'x': nx, 'y': ny, 'w': nw, 'h': nh, 'ok': True}

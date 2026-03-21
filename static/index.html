@@ -1156,6 +1156,24 @@ socket.on('video_status', function(d) {
   }
 });
 
+async function startTrackerApi(box) {
+  const r = await fetch('/api/tracker/start', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(box)
+  });
+  const d = await r.json();
+  if (d.ok) {
+    trackerActive = true;
+    trackerBox = {x: box.x, y: box.y, w: box.w, h: box.h};
+    renderTrackCanvas();
+  } else {
+    drawRect = null;
+    alert('Tracker klaida: ' + (d.error || 'Nepavyko'));
+    renderTrackCanvas();
+  }
+}
+
 async function toggleVideo() {
   if (videoConnected) {
     // Disconnect
@@ -1209,6 +1227,14 @@ resizeTrackCanvas();
 
 socket.on('video_dims', d => { videoNativeW = d.w; videoNativeH = d.h; });
 socket.on('video_status', d => { if (d.w) { videoNativeW = d.w; videoNativeH = d.h; } });
+// Fetch dims on page load
+fetch('/api/video/dims').then(r=>r.json()).then(d=>{ if(d.w){ videoNativeW=d.w; videoNativeH=d.h; } });
+// Request dims on connect
+socket.on('connect', () => {
+  fetch('/api/video/status').then(r=>r.json()).then(d=>{
+    if(d.active){ fetch('/api/video/dims').then(r=>r.json()).then(dd=>{ if(dd.w){videoNativeW=dd.w;videoNativeH=dd.h;} }); }
+  });
+});
 
 // Get position relative to actual video content (letterbox aware)
 function getVideoRect() {
@@ -1275,10 +1301,11 @@ trackCanvas.addEventListener('mouseup', async e => {
   const d = await r.json();
   if (d.ok) {
     trackerActive = true;
-    trackerBox = drawRect;
+    trackerBox = {x: drawRect.x, y: drawRect.y, w: drawRect.w, h: drawRect.h};
+    drawRect = null;
   } else {
     drawRect = null;
-    alert('Tracker klaida: ' + (d.error || 'Nepavyko'));
+    alert('Tracker: ' + (d.error || 'Klaida - ar video veikia?'));
   }
   renderTrackCanvas();
   e.preventDefault();
