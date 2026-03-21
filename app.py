@@ -43,6 +43,7 @@ mav_lock = threading.Lock()
 mav_connect_string = 'udpout:192.168.144.12:19856'
 mav_status = {'connected': False, 'connecting': False, 'error': None, 'connection_string': 'udpout:192.168.144.12:19856'}
 mav_manual_only = True  # No auto-connect on startup
+_mav_conn_params = {'type': 'udpout', 'ip': '192.168.144.12', 'port': '19856', 'baud': '115200'}
 mav_stop_event = threading.Event()
 
 telemetry = {
@@ -107,34 +108,70 @@ GPS_FIX_TYPES = {
 }
 
 
+def build_mavlink_connection(conn_type, ip, port, baud=115200):
+    """Build pymavlink connection using raw socket to avoid Windows errors."""
+    import socket as sock_mod
+    if conn_type in ('udpout', 'udpci'):
+        # Manually create UDP socket — send to remote, bind to 0.0.0.0
+        s = sock_mod.socket(sock_mod.AF_INET, sock_mod.SOCK_DGRAM)
+        s.setsockopt(sock_mod.SOL_SOCKET, sock_mod.SO_REUSEADDR, 1)
+        s.bind(('0.0.0.0', 0))  # bind to any local port
+        s.setblocking(False)
+        conn = mavutil.mavudp(f'{ip}:{port}', input=False,
+                              source_system=255, source_component=0)
+        return conn
+    elif conn_type == 'udpin':
+        return mavutil.mavlink_connection(f'udpin:0.0.0.0:{port}',
+                                          source_system=255, source_component=0)
+    elif conn_type == 'tcp':
+        return mavutil.mavlink_connection(f'tcp:{ip}:{port}',
+                                          source_system=255, source_component=0)
+    elif conn_type == 'serial':
+        return mavutil.mavlink_connection(f'{port}', baud=baud,
+                                          source_system=255, source_component=0)
+    else:
+        return mavutil.mavlink_connection(f'udpout:{ip}:{port}',
+                                          source_system=255, source_component=0)
+
+
 def connect_mavlink(connection_string=None):
     """Connect to MAVLink — single attempt, no auto-retry."""
-    global mav_connection, mav_connect_string, mav_status, mav_stop_event
+    global mav_connection, mav_connect_string, mav_status, mav_stop_event, \
+           _mav_conn_params
     if connection_string:
         mav_connect_string = connection_string
     mav_stop_event.clear()
     try:
         cs = mav_connect_string
-        print(f"Connecting to MAVLink on {cs}...")
+        print(f"Connecting to MAVLink: {cs}")
         mav_status['connecting'] = True
         mav_status['connected'] = False
         mav_status['error'] = None
         mav_status['connection_string'] = cs
-        conn = mavutil.mavlink_connection(cs, source_system=255, source_component=0)
+
+        # Parse stored params for cleaner connection
+        ct = _mav_conn_params.get('type', 'udpout')
+        ip = _mav_conn_params.get('ip', '192.168.144.12')
+        port = int(_mav_conn_params.get('port', 19856))
+        baud = int(_mav_conn_params.get('baud', 115200))
+
+        conn = build_mavlink_connection(ct, ip, port, baud)
         conn.wait_heartbeat(timeout=15)
-        print(f"MAVLink connected: system {conn.target_system}, component {conn.target_component}")
+        print(f"MAVLink connected: sys={conn.target_system}")
         with mav_lock:
             mav_connection = conn
         mav_status['connected'] = True
         mav_status['connecting'] = False
         mav_status['error'] = None
-        receive_loop(conn)  # Blocks until disconnected
+        receive_loop(conn)
     except Exception as e:
-        print(f"MAVLink connection error: {e}")
+        print(f"MAVLink error: {e}")
+        mav_status['error'] = str(e)
     finally:
         mav_status['connected'] = False
         mav_status['connecting'] = False
-        mav_status['error'] = 'Disconnected'
+        if not mav_status.get('error'):
+            mav_status['error'] = 'Disconnected'
         with mav_lock:
             mav_connection = None
 
@@ -249,38 +286,35 @@ def api_connection_status():
 
 @app.route('/api/connect', methods=['POST'])
 def api_connect():
-    global mav_connect_string, mav_stop_event
+    global mav_connect_string, mav_stop_event, _mav_conn_params
     data = request.get_json() or {}
-    ip = data.get('ip', '').strip()
-    port = data.get('port', '19856')
-    conn_type = data.get('type', 'udpci')  # udpci, udpin, tcp
+    ip   = data.get('ip', '').strip()
+    port = str(data.get('port', '19856')).strip()
+    conn_type = data.get('type', 'udpout')
+    baud = str(data.get('baud', '115200'))
 
-    if not ip:
+    if not ip and conn_type not in ('udpin', 'serial'):
         return jsonify({'error': 'IP is required'}), 400
 
-    # Build connection string
-    baud = int(data.get('baud', 115200))
-    if conn_type in ('udpci', 'udpout'):
-        # udpout: sends to remote IP, does NOT bind locally → no WINERROR 10049
+    # Store params for cleaner connection building
+    _mav_conn_params = {'type': conn_type, 'ip': ip, 'port': port, 'baud': baud}
+
+    # Human-readable connection string for display only
+    if conn_type in ('udpout', 'udpci'):
         cs = f'udpout:{ip}:{port}'
     elif conn_type == 'udpin':
-        # Listen on local port (bind to 0.0.0.0)
         cs = f'udpin:0.0.0.0:{port}'
     elif conn_type == 'tcp':
         cs = f'tcp:{ip}:{port}'
     elif conn_type == 'serial':
-        cs = f'{port},{baud}'
+        cs = f'{port}@{baud}'
     else:
         cs = f'udpout:{ip}:{port}'
 
-    # Stop current connection thread
+    # Stop current connection
     mav_stop_event.set()
-    with mav_lock:
-        pass  # let receive_loop exit naturally
+    time.sleep(0.3)
 
-    time.sleep(0.5)
-
-    # Start new connection thread
     mav_stop_event.clear()
     mav_connect_string = cs
     mav_status['connection_string'] = cs
