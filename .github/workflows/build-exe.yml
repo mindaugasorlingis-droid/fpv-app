@@ -80,8 +80,8 @@ jobs:
     - name: Create Release
       uses: softprops/action-gh-release@v2
       with:
-        tag_name: latest
-        name: FPV Ground Station - Latest Build
+        tag_name: v1.0.${{ github.run_number }}
+        name: FPV Ground Station v1.0.${{ github.run_number }}
         files: FPV-GroundStation-Windows.zip
         body: |
           ## FPV Ground Station for Windows
