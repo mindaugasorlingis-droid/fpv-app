@@ -42,6 +42,7 @@ mav_connection = None
 mav_lock = threading.Lock()
 mav_connect_string = 'udp:192.168.144.12:19856'
 mav_status = {'connected': False, 'connecting': False, 'error': None, 'connection_string': 'udp:192.168.144.12:19856'}
+mav_manual_only = True  # No auto-connect on startup
 mav_stop_event = threading.Event()
 
 telemetry = {
@@ -107,37 +108,35 @@ GPS_FIX_TYPES = {
 
 
 def connect_mavlink(connection_string=None):
-    """Connect to MAVLink and keep reconnecting."""
+    """Connect to MAVLink — single attempt, no auto-retry."""
     global mav_connection, mav_connect_string, mav_status, mav_stop_event
     if connection_string:
         mav_connect_string = connection_string
     mav_stop_event.clear()
-    while not mav_stop_event.is_set():
-        try:
-            cs = mav_connect_string
-            print(f"Connecting to MAVLink on {cs}...")
-            mav_status['connecting'] = True
-            mav_status['connected'] = False
-            mav_status['error'] = None
-            mav_status['connection_string'] = cs
-            conn = mavutil.mavlink_connection(cs, source_system=255, source_component=0)
-            conn.wait_heartbeat(timeout=30)
-            print(f"MAVLink connected: system {conn.target_system}, component {conn.target_component}")
-            with mav_lock:
-                mav_connection = conn
-            mav_status['connected'] = True
-            mav_status['connecting'] = False
-            mav_status['error'] = None
-            receive_loop(conn)
-        except Exception as e:
-            print(f"MAVLink connection error: {e}")
-            mav_status['connected'] = False
-            mav_status['connecting'] = False
-            mav_status['error'] = str(e)
-            with mav_lock:
-                mav_connection = None
-            if not mav_stop_event.is_set():
-                time.sleep(5)
+    try:
+        cs = mav_connect_string
+        print(f"Connecting to MAVLink on {cs}...")
+        mav_status['connecting'] = True
+        mav_status['connected'] = False
+        mav_status['error'] = None
+        mav_status['connection_string'] = cs
+        conn = mavutil.mavlink_connection(cs, source_system=255, source_component=0)
+        conn.wait_heartbeat(timeout=15)
+        print(f"MAVLink connected: system {conn.target_system}, component {conn.target_component}")
+        with mav_lock:
+            mav_connection = conn
+        mav_status['connected'] = True
+        mav_status['connecting'] = False
+        mav_status['error'] = None
+        receive_loop(conn)  # Blocks until disconnected
+    except Exception as e:
+        print(f"MAVLink connection error: {e}")
+    finally:
+        mav_status['connected'] = False
+        mav_status['connecting'] = False
+        mav_status['error'] = 'Disconnected'
+        with mav_lock:
+            mav_connection = None
 
 
 def receive_loop(conn):
@@ -421,8 +420,11 @@ def video_capture_loop():
         cap = None
         try:
             if CV2_AVAILABLE:
+                # Low-latency RTSP options via FFMPEG
+                os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;udp|fflags;nobuffer|flags;low_delay|framedrop;1'
                 cap = cv2.VideoCapture(RTSP_URL, cv2.CAP_FFMPEG)
                 if not cap.isOpened():
+                    os.environ.pop('OPENCV_FFMPEG_CAPTURE_OPTIONS', None)
                     cap = cv2.VideoCapture(RTSP_URL)
                 if not cap.isOpened():
                     print(f"Video: cannot open {RTSP_URL}")
@@ -430,6 +432,7 @@ def video_capture_loop():
                     socketio.emit('video_status', {'connected': False, 'error': 'Cannot connect to RTSP'})
                     continue
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                cap.set(cv2.CAP_PROP_FPS, 30)
                 print("Video: connected")
                 socketio.emit('video_status', {'connected': True, 'error': None})
                 while video_running and video_active:
@@ -573,10 +576,8 @@ if __name__ == '__main__':
     else:
         print("cv2 not available - video disabled")
 
-    if MAVLINK_AVAILABLE:
-        mav_thread = threading.Thread(target=connect_mavlink, daemon=True)
-        mav_thread.start()
-    else:
+    # MAVLink: manual connect only — do NOT auto-connect on startup
+    if not MAVLINK_AVAILABLE:
         print("MAVLink not available - running without telemetry")
 
     telem_thread = threading.Thread(target=emit_telemetry_loop, daemon=True)
