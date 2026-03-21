@@ -204,6 +204,45 @@ def index():
     return send_from_directory(app.static_folder, 'index.html')
 
 
+@app.route('/api/serial/ports', methods=['GET'])
+def api_serial_ports():
+    """List available serial/COM ports."""
+    ports = []
+    try:
+        import serial.tools.list_ports
+        for p in serial.tools.list_ports.comports():
+            ports.append({
+                'device': p.device,
+                'description': p.description or p.device,
+                'hwid': p.hwid or ''
+            })
+        ports.sort(key=lambda x: x['device'])
+    except ImportError:
+        # pyserial not installed - try manual detection
+        import glob, platform
+        if platform.system() == 'Windows':
+            import winreg
+            try:
+                key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'HARDWARE\DEVICEMAP\SERIALCOMM')
+                i = 0
+                while True:
+                    try:
+                        name, val, _ = winreg.EnumValue(key, i)
+                        ports.append({'device': val, 'description': val, 'hwid': ''})
+                        i += 1
+                    except OSError:
+                        break
+            except Exception:
+                pass
+        else:
+            for pattern in ['/dev/ttyUSB*', '/dev/ttyACM*', '/dev/tty.usbserial*', '/dev/tty.usbmodem*']:
+                for p in glob.glob(pattern):
+                    ports.append({'device': p, 'description': p, 'hwid': ''})
+    except Exception as e:
+        return jsonify({'ports': [], 'error': str(e)})
+    return jsonify({'ports': ports})
+
+
 @app.route('/api/connection', methods=['GET'])
 def api_connection_status():
     return jsonify(mav_status)

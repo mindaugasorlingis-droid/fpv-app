@@ -389,6 +389,12 @@
       style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;"/>
     <input id="connPort" type="text" placeholder="Portas / Device (pvz. 19856 arba /dev/ttyUSB0)" value="19856"
       style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;"/>
+    <div id="comPortWrap" style="display:none;">
+      <select id="comPortSelect" onchange="onComPortSelect()" style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;width:100%;">
+        <option value="">-- Pasirinkti COM portą --</option>
+      </select>
+      <button onclick="refreshComPorts()" style="margin-top:4px;width:100%;background:#2a2a3e;color:#888;border:1px solid #444;border-radius:6px;padding:4px 8px;font-size:11px;cursor:pointer;">↺ Atnaujinti portų sąrašą</button>
+    </div>
     <select id="connBaud" style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;display:none;">
       <option value="57600">57600</option>
       <option value="115200" selected>115200</option>
@@ -465,21 +471,55 @@ function onConnTypeChange() {
   const ipEl = document.getElementById('connIp');
   const portEl = document.getElementById('connPort');
   const baudEl = document.getElementById('connBaud');
+  const comWrap = document.getElementById('comPortWrap');
   if (type === 'serial') {
     ipEl.style.display = 'none';
-    portEl.placeholder = 'Device (pvz. /dev/ttyUSB0)';
-    portEl.value = '/dev/ttyUSB0';
+    portEl.style.display = 'none';
     baudEl.style.display = 'block';
+    comWrap.style.display = 'block';
+    refreshComPorts();
   } else if (type === 'udpin') {
+    ipEl.style.display = 'block';
     ipEl.style.display = 'none';
-    portEl.placeholder = 'Portas (pvz. 14550)';
+    portEl.style.display = 'block';
+    portEl.placeholder = 'Portas (pvz. 19856)';
     portEl.value = '19856';
     baudEl.style.display = 'none';
+    comWrap.style.display = 'none';
   } else {
     ipEl.style.display = 'block';
-    portEl.placeholder = 'Portas (pvz. 14550)';
+    portEl.style.display = 'block';
+    portEl.placeholder = 'Portas (pvz. 19856)';
     portEl.value = '19856';
     baudEl.style.display = 'none';
+    comWrap.style.display = 'none';
+  }
+}
+
+async function refreshComPorts() {
+  const sel = document.getElementById('comPortSelect');
+  sel.innerHTML = '<option value="">⏳ Kraunama...</option>';
+  try {
+    const r = await fetch('/api/serial/ports');
+    const d = await r.json();
+    const ports = d.ports || [];
+    if (ports.length === 0) {
+      sel.innerHTML = '<option value="">-- Portų nerasta --</option>';
+    } else {
+      sel.innerHTML = '<option value="">-- Pasirinkti --</option>' +
+        ports.map(p => '<option value="' + p.device + '">' + p.device + ' — ' + p.description + '</option>').join('');
+      if (ports.length === 1) sel.value = ports[0].device;
+      onComPortSelect();
+    }
+  } catch(e) {
+    sel.innerHTML = '<option value="">-- Klaida --</option>';
+  }
+}
+
+function onComPortSelect() {
+  const val = document.getElementById('comPortSelect').value;
+  if (val) {
+    document.getElementById('connPort').value = val;
   }
 }
 

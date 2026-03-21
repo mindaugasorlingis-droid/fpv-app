@@ -2,3 +2,4 @@ pymavlink
 flask
 flask-socketio
 opencv-python
+pyserial
