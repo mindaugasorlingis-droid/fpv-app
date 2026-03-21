@@ -1,4 +1,4 @@
 pymavlink
 flask
 flask-socketio
-eventlet
+opencv-python

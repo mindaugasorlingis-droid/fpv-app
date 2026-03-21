@@ -245,7 +245,7 @@
 
 <!-- VIDEO -->
 <div id="videoWrap">
-  <video id="videoEl" autoplay muted playsinline></video>
+  <img id="videoEl" src="/video" alt="" onerror="onVideoError()" onload="onVideoLoad()">
   <div id="noSignal">NO VIDEO SIGNAL</div>
 </div>
 
@@ -1031,94 +1031,36 @@ async function apiRestartMission() {
   } catch(e) { alert('Request failed: ' + e.message); }
 }
 
-// ── WEBRTC / WHEP ──────────────────────────────────────────────────────────
+// ── MJPEG VIDEO ────────────────────────────────────────────────────────────
 const video = document.getElementById('videoEl');
 const noSig = document.getElementById('noSignal');
-let currentPc = null;
-let autoReconnect = true;
 
-async function stopWhep() {
-  autoReconnect = false;
-  if (currentPc) {
-    currentPc.close();
-    currentPc = null;
-  }
-  video.srcObject = null;
-  noSig.style.display = 'block';
+function onVideoLoad() {
+  noSig.style.display = 'none';
+  updateVideoBtn(true);
 }
 
-async function startWhep() {
-  autoReconnect = true;
-  if (currentPc) { currentPc.close(); currentPc = null; }
-
-  const whepUrl = 'http://localhost:8889/stream/whep';
-  try {
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-    });
-    currentPc = pc;
-
-    pc.ontrack = (evt) => {
-      if (evt.streams && evt.streams[0]) {
-        video.srcObject = evt.streams[0];
-        noSig.style.display = 'none';
-        updateVideoBtn(true);
-      }
-    };
-
-    pc.addTransceiver('video', { direction: 'recvonly' });
-    pc.addTransceiver('audio', { direction: 'recvonly' });
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-
-    await new Promise(resolve => {
-      if (pc.iceGatheringState === 'complete') { resolve(); return; }
-      pc.addEventListener('icegatheringstatechange', () => {
-        if (pc.iceGatheringState === 'complete') resolve();
-      });
-      setTimeout(resolve, 3000);
-    });
-
-    const resp = await fetch(whepUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/sdp' },
-      body: pc.localDescription.sdp
-    });
-
-    if (!resp.ok) throw new Error('WHEP: ' + resp.status);
-
-    const answerSdp = await resp.text();
-    await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
-
-    pc.oniceconnectionstatechange = () => {
-      if (['disconnected','failed','closed'].includes(pc.iceConnectionState)) {
-        noSig.style.display = 'block';
-        updateVideoBtn(false);
-        if (autoReconnect) setTimeout(startWhep, 5000);
-      }
-    };
-
-  } catch(e) {
-    console.warn('WHEP failed:', e.message);
-    noSig.style.display = 'block';
-    updateVideoBtn(false);
-    if (autoReconnect) setTimeout(startWhep, 5000);
-  }
+function onVideoError() {
+  noSig.style.display = 'block';
+  updateVideoBtn(false);
+  setTimeout(reconnectVideo, 5000);
 }
 
 function reconnectVideo() {
   const btn = document.getElementById('videoreconnectBtn');
-  btn.textContent = '⟳';
-  btn.style.opacity = '0.5';
-  btn.disabled = true;
-  startWhep().finally(() => {
-    setTimeout(() => {
-      btn.textContent = '⟳ VIDEO';
-      btn.style.opacity = '1';
-      btn.disabled = false;
-    }, 2000);
-  });
+  if (btn) { btn.textContent = '⟳'; btn.style.opacity = '0.5'; btn.disabled = true; }
+  noSig.style.display = 'block';
+  video.src = '';
+  setTimeout(() => {
+    video.src = '/video?' + Date.now();
+    if (btn) {
+      setTimeout(() => {
+        btn.textContent = '⟳ VIDEO';
+        btn.style.opacity = '1';
+        btn.disabled = false;
+      }, 2000);
+    }
+  }, 500);
 }
 
 function updateVideoBtn(active) {
@@ -1127,8 +1069,6 @@ function updateVideoBtn(active) {
   btn.style.borderColor = active ? '#BED600' : '#e74c3c';
   btn.style.color = active ? '#BED600' : '#e74c3c';
 }
-
-startWhep();
 </script>
 </body>
 </html>

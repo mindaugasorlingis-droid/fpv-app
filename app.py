@@ -7,8 +7,17 @@ import threading
 import time
 import os
 import sys
-from flask import Flask, request, jsonify, send_from_directory
+import subprocess
+from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
 from flask_socketio import SocketIO, emit
+
+# Video capture
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
+    print("WARNING: cv2 not available - video disabled")
 
 # PyInstaller support — find bundled files
 if getattr(sys, 'frozen', False):
@@ -340,34 +349,73 @@ def on_disconnect():
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
-def start_mediamtx():
-    """Auto-start mediamtx if present next to exe."""
-    import subprocess, platform
-    exe_name = 'mediamtx.exe' if platform.system() == 'Windows' else 'mediamtx'
-    if getattr(sys, 'frozen', False):
-        exe_dir = os.path.dirname(sys.executable)
-    else:
-        exe_dir = BASE_DIR
-    mediamtx_path = os.path.join(exe_dir, exe_name)
-    config_path = os.path.join(exe_dir, 'mediamtx.yml')
-    if os.path.exists(mediamtx_path):
+# ─── Video Stream ─────────────────────────────────────────────────────────────
+RTSP_URL = 'rtsp://192.168.144.25:8554/main.264'
+GSTREAMER_PIPELINE = (
+    f'rtspsrc location={RTSP_URL} latency=0 ! '
+    'rtph264depay ! avdec_h264 ! videoconvert ! '
+    'video/x-raw,format=BGR ! appsink name=outsink drop=true max-buffers=1'
+)
+
+video_frame = None
+video_lock = threading.Lock()
+video_running = False
+
+def video_capture_loop():
+    global video_frame, video_running
+    video_running = True
+    while video_running:
+        cap = None
         try:
-            subprocess.Popen(
-                [mediamtx_path, config_path],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                cwd=exe_dir
-            )
-            print(f"mediamtx started from {mediamtx_path}")
+            if CV2_AVAILABLE:
+                # Try GStreamer first, fallback to direct RTSP
+                try:
+                    cap = cv2.VideoCapture(GSTREAMER_PIPELINE, cv2.CAP_GSTREAMER)
+                    if not cap.isOpened():
+                        raise Exception("GStreamer failed")
+                except Exception:
+                    cap = cv2.VideoCapture(RTSP_URL, cv2.CAP_FFMPEG)
+
+                if not cap.isOpened():
+                    time.sleep(5)
+                    continue
+
+                while video_running:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    with video_lock:
+                        video_frame = jpeg.tobytes()
         except Exception as e:
-            print(f"mediamtx start failed: {e}")
-    else:
-        print(f"mediamtx not found at {mediamtx_path}")
+            print(f"Video capture error: {e}")
+        finally:
+            if cap:
+                cap.release()
+        time.sleep(3)
+
+
+def gen_frames():
+    while True:
+        with video_lock:
+            frame = video_frame
+        if frame:
+            yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+        else:
+            time.sleep(0.05)
+        time.sleep(0.033)  # ~30fps cap
+
+
+@app.route('/video')
+def video_feed():
+    return Response(stream_with_context(gen_frames()),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
 
 
 if __name__ == '__main__':
-    # Auto-start mediamtx
-    threading.Thread(target=start_mediamtx, daemon=True).start()
+    # Start video capture
+    if CV2_AVAILABLE:
+        threading.Thread(target=video_capture_loop, daemon=True).start()
 
     if MAVLINK_AVAILABLE:
         mav_thread = threading.Thread(target=connect_mavlink, daemon=True)
