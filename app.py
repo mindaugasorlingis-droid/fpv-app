@@ -516,6 +516,28 @@ def receive_loop(conn):
                 flags = msg.flags
                 socketio.emit('ekf_status', {'flags': flags})
 
+            elif msg_type == 'RC_CHANNELS':
+                # RC takeover detection: if pilot moves roll (ch1) or pitch (ch2)
+                # more than deadzone while GUIDE is active → stop guide, switch FBWA
+                if guide_active:
+                    RC_DEADZONE = 100  # PWM units from center (1500 ±100 = ignored)
+                    ch1 = getattr(msg, 'chan1_raw', 1500)  # roll
+                    ch2 = getattr(msg, 'chan2_raw', 1500)  # pitch
+                    if abs(ch1 - 1500) > RC_DEADZONE or abs(ch2 - 1500) > RC_DEADZONE:
+                        print(f"RC takeover detected: ch1={ch1} ch2={ch2} — stopping GUIDE")
+                        guide_active = False
+                        socketio.emit('guide_status', {'active': False, 'mode': 'OFF', 'reason': 'RC takeover'})
+                        socketio.emit('mavlink_msg', {
+                            'text': 'RC takeover — GUIDE stopped, switching to FBWA',
+                            'severity': 4, 'level': 'WARNING', 'ts': time.time()
+                        })
+                        # Switch to FBWA
+                        try:
+                            fbwa_num = MODE_NAME_TO_NUM.get('FBWA', 5)
+                            conn.set_mode(fbwa_num)
+                        except Exception:
+                            pass
+
         except Exception as e:
             print(f"MAVLink receive error: {e}")
             break
