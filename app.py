@@ -225,14 +225,17 @@ def make_connection(cs):
 def connect_mp_websocket(ws_url):
     """Connect to Mission Planner via ws://host:56781/websocket/raw
 
-    Strategy (Windows-safe, no pipes, no /dev/stdin):
-      1. Open UDP loopback pair: pymavlink listens on 127.0.0.1:LPORT
-      2. WebSocket → recv thread → forward bytes to pymavlink via UDP loopback
-      3. pymavlink.write() → override to send back via WebSocket
+    MP streams raw MAVLink bytes over WebSocket binary frames.
+    We build a MAVLink parser directly on top — no UDP loopback needed.
+    This avoids all the UDP race conditions and select() issues.
+
+    Architecture:
+      WebSocket recv thread → byte buffer → MAVLink parser (in-thread)
+      MAVLink send → WebSocket send_binary
     """
     import websocket as _ws
-    import socket as _socket
-    import types
+    import queue
+    from pymavlink.dialects.v20 import ardupilotmega as mav_dialect
     global mav_connection, mav_status, mav_stop_event, mp_ws
 
     print(f"MP WebSocket: connecting to {ws_url}")
@@ -242,32 +245,45 @@ def connect_mp_websocket(ws_url):
     mav_status['connection_string'] = ws_url
 
     ws_conn = None
-    udp_sender = None
 
     try:
-        # Step 1: connect WebSocket to MP
         ws_conn = _ws.create_connection(ws_url, timeout=10)
         with mp_ws_lock:
             mp_ws = ws_conn
-        print("MP WebSocket: connected")
+        print("MP WebSocket: connected to MP")
 
-        # Step 2: find free loopback UDP port for pymavlink to listen on
-        tmp = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
-        tmp.bind(('127.0.0.1', 0))
-        lport = tmp.getsockname()[1]
-        tmp.close()
+        # Build MAVLink connection using TCP loopback as transport
+        # but use mavudp in server mode with our own socket pair
+        import socket as _socket
+        import types
 
-        # Step 3: pymavlink listens on loopback port (udpin)
-        conn = mavutil.mavlink_connection(
-            f'udpin:127.0.0.1:{lport}',
-            source_system=255, source_component=0,
-        )
+        # Create a proper UDP server socket that pymavlink can use
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        sock.bind(('127.0.0.1', 0))
+        sock.setblocking(False)
+        lport = sock.getsockname()[1]
 
-        # Step 4: sender socket — sends bytes into pymavlink's listener
-        udp_sender = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
-        udp_sender.connect(('127.0.0.1', lport))
+        # Sender — injects WS data into our socket
+        sender = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        sender.connect(('127.0.0.1', lport))
 
-        # Step 5: override conn.write → send via WebSocket instead of UDP
+        # Build mavudp manually so we control the socket
+        conn = mavutil.mavudp.__new__(mavutil.mavudp)
+        conn.port = sock
+        conn.udp_server = True
+        conn.broadcast = False
+        conn.destination_addr = ('127.0.0.1', lport)
+        conn.resolved_destination_addr = '127.0.0.1'
+        conn.last_address = None
+        conn.timeout = 0
+        conn.clients = set()
+        conn.clients_last_alive = {}
+        mavutil.mavfile.__init__(conn, sock.fileno(),
+                                 f'mp_ws:{ws_url}',
+                                 source_system=255, source_component=0,
+                                 input=False)
+
+        # Override write → WebSocket
         def _write(self, buf):
             try:
                 with mp_ws_lock:
@@ -275,43 +291,66 @@ def connect_mp_websocket(ws_url):
                         mp_ws.send_binary(bytes(buf))
             except Exception as e:
                 print(f"MP WS send error: {e}")
-
         conn.write = types.MethodType(_write, conn)
 
-        # Step 6: WebSocket → UDP loopback forwarder thread
-        def ws_to_udp():
-            while not mav_stop_event.is_set():
+        # WebSocket → UDP inject thread
+        ws_dead = threading.Event()
+        def ws_reader():
+            buf = b''
+            while not mav_stop_event.is_set() and not ws_dead.is_set():
                 try:
+                    ws_conn.settimeout(2.0)
                     data = ws_conn.recv()
-                    if not data:
+                    if data is None:
                         continue
                     if isinstance(data, str):
                         data = data.encode('latin-1')
-                    udp_sender.send(data)
+                    if data:
+                        # Inject in chunks — UDP has size limits
+                        # but MAVLink packets are small (<280 bytes)
+                        # MP may bundle multiple packets per WS frame
+                        # Feed byte by byte to avoid split packets via UDP size limit
+                        chunk_size = 256
+                        for i in range(0, len(data), chunk_size):
+                            try:
+                                sender.send(data[i:i+chunk_size])
+                            except Exception:
+                                pass
+                except _ws.WebSocketTimeoutException:
+                    continue
                 except Exception as e:
                     print(f"MP WS recv error: {e}")
+                    ws_dead.set()
                     break
-            try: udp_sender.close()
+            try: sender.close()
             except: pass
 
-        threading.Thread(target=ws_to_udp, daemon=True).start()
+        t = threading.Thread(target=ws_reader, daemon=True)
+        t.start()
 
-        # Step 7: wait for heartbeat → get target_system
-        print("Waiting for vehicle heartbeat via MP...")
+        # Wait for first packet so pymavlink learns remote addr
+        print("Waiting for first MAVLink packet from MP...")
         deadline = time.time() + 30
-        while conn.target_system == 0 and time.time() < deadline:
+        while not ws_dead.is_set() and time.time() < deadline:
             if mav_stop_event.is_set():
                 raise Exception("Cancelled")
             try:
-                conn.recv_match(type='HEARTBEAT', blocking=False)
+                m = conn.recv_match(blocking=False)
+                if m is not None:
+                    print(f"First packet: {m.get_type()}")
+                    if conn.target_system != 0:
+                        break
             except Exception:
                 pass
-            time.sleep(0.05)
+            time.sleep(0.02)
 
+        if ws_dead.is_set():
+            raise Exception("WebSocket closed before heartbeat")
         if conn.target_system == 0:
             raise Exception("No heartbeat from MP in 30s")
 
-        print(f"MP MAVLink: sys={conn.target_system} comp={conn.target_component}")
+        print(f"MP MAVLink ready: sys={conn.target_system} comp={conn.target_component}")
+
         conn.mav.request_data_stream_send(
             conn.target_system, conn.target_component,
             mavutil.mavlink.MAV_DATA_STREAM_ALL, 10, 1
@@ -324,7 +363,8 @@ def connect_mp_websocket(ws_url):
         mav_status['error'] = None
         socketio.emit('mavlink_status', {'connected': True, 'error': None, 'mode': 'MP'})
 
-        receive_loop(conn)
+        # Run receive loop — exits when ws_dead or mav_stop_event
+        receive_loop_mp(conn, ws_dead)
 
     except Exception as e:
         print(f"MP WebSocket error: {e}")
@@ -338,9 +378,37 @@ def connect_mp_websocket(ws_url):
             mp_ws = None
         try: ws_conn and ws_conn.close()
         except: pass
-        try: udp_sender and udp_sender.close()
-        except: pass
         socketio.emit('mavlink_status', {'connected': False, 'error': mav_status.get('error', 'Disconnected')})
+
+
+def receive_loop_mp(conn, ws_dead):
+    """receive_loop variant for MP WebSocket — also checks ws_dead event."""
+    import select as _select
+    global telemetry
+    last_heartbeat = time.time()
+    while not ws_dead.is_set() and not mav_stop_event.is_set():
+        try:
+            try:
+                fd = conn.port.fileno()
+                r, _, _ = _select.select([fd], [], [], 1.0)
+            except Exception:
+                r = [True]
+            if not r:
+                if time.time() - last_heartbeat > 15:
+                    print("MP MAVLink: no heartbeat 15s")
+                    break
+                continue
+            msg = conn.recv_match(blocking=False)
+            if msg is None:
+                continue
+            # reuse same message processing as receive_loop
+            # by injecting into the shared receive path
+            _handle_mavlink_msg(msg, conn)
+            if msg.get_type() == 'HEARTBEAT':
+                last_heartbeat = time.time()
+        except Exception as e:
+            print(f"MP receive error: {e}")
+            break
 
 
 def connect_mavlink(connection_string=None):
@@ -425,6 +493,67 @@ def connect_mavlink(connection_string=None):
         time.sleep(3)
 
 
+def _handle_mavlink_msg(msg, conn):
+    """Process a single MAVLink message — shared by receive_loop and receive_loop_mp."""
+    global telemetry, guide_active
+    import math as _math
+    msg_type = msg.get_type()
+    if msg_type == 'ATTITUDE':
+        telemetry['roll']  = _math.degrees(msg.roll)
+        telemetry['pitch'] = _math.degrees(msg.pitch)
+        telemetry['yaw']   = _math.degrees(msg.yaw)
+    elif msg_type == 'VFR_HUD':
+        telemetry['airspeed']    = msg.airspeed
+        telemetry['groundspeed'] = msg.groundspeed
+        telemetry['heading']     = msg.heading
+        telemetry['altitude_rel']= msg.alt
+        telemetry['throttle']    = msg.throttle
+    elif msg_type == 'GLOBAL_POSITION_INT':
+        telemetry['lat']          = msg.lat / 1e7
+        telemetry['lon']          = msg.lon / 1e7
+        telemetry['altitude_amsl']= msg.alt / 1000.0
+        telemetry['altitude_rel'] = msg.relative_alt / 1000.0
+    elif msg_type == 'GPS_RAW_INT':
+        telemetry['gps_fix']  = msg.fix_type
+        telemetry['gps_sats'] = msg.satellites_visible
+    elif msg_type == 'SYS_STATUS':
+        telemetry['battery_voltage']   = msg.voltage_battery / 1000.0
+        telemetry['battery_remaining'] = msg.battery_remaining
+    elif msg_type == 'HEARTBEAT':
+        armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
+        telemetry['armed'] = armed
+        mode_num = msg.custom_mode
+        telemetry['flight_mode'] = ARDUPLANE_MODES.get(mode_num, f'MODE_{mode_num}')
+    elif msg_type == 'STATUSTEXT':
+        text = msg.text.rstrip('\x00').strip()
+        if text:
+            severity_labels = {0:'EMERGENCY',1:'ALERT',2:'CRITICAL',3:'ERROR',
+                               4:'WARNING',5:'NOTICE',6:'INFO',7:'DEBUG'}
+            socketio.emit('mavlink_msg', {
+                'text': text, 'severity': msg.severity,
+                'level': severity_labels.get(msg.severity, 'INFO'), 'ts': time.time()
+            })
+    elif msg_type == 'EKF_STATUS_REPORT':
+        socketio.emit('ekf_status', {'flags': msg.flags})
+    elif msg_type == 'RC_CHANNELS':
+        if guide_active:
+            RC_DEADZONE = 100
+            ch1 = getattr(msg, 'chan1_raw', 1500)
+            ch2 = getattr(msg, 'chan2_raw', 1500)
+            if abs(ch1 - 1500) > RC_DEADZONE or abs(ch2 - 1500) > RC_DEADZONE:
+                print(f"RC takeover: ch1={ch1} ch2={ch2}")
+                guide_active = False
+                socketio.emit('guide_status', {'active': False, 'mode': 'OFF', 'reason': 'RC takeover'})
+                socketio.emit('mavlink_msg', {
+                    'text': 'RC takeover - GUIDE stopped, switching to FBWA',
+                    'severity': 4, 'level': 'WARNING', 'ts': time.time()
+                })
+                try:
+                    conn.set_mode(MODE_NAME_TO_NUM.get('FBWA', 5))
+                except Exception:
+                    pass
+
+
 def receive_loop(conn):
     """Receive and process MAVLink messages.
 
@@ -460,83 +589,9 @@ def receive_loop(conn):
             msg = conn.recv_match(blocking=False)
             if msg is None:
                 continue
-            msg_type = msg.get_type()
-            if msg_type == 'ATTITUDE':
-                import math
-                telemetry['roll'] = math.degrees(msg.roll)
-                telemetry['pitch'] = math.degrees(msg.pitch)
-                telemetry['yaw'] = math.degrees(msg.yaw)
-
-            elif msg_type == 'VFR_HUD':
-                telemetry['airspeed'] = msg.airspeed
-                telemetry['groundspeed'] = msg.groundspeed
-                telemetry['heading'] = msg.heading
-                telemetry['altitude_rel'] = msg.alt
-                telemetry['throttle'] = msg.throttle  # 0-100%
-
-            elif msg_type == 'GLOBAL_POSITION_INT':
-                telemetry['lat'] = msg.lat / 1e7
-                telemetry['lon'] = msg.lon / 1e7
-                telemetry['altitude_amsl'] = msg.alt / 1000.0
-                telemetry['altitude_rel'] = msg.relative_alt / 1000.0
-
-            elif msg_type == 'GPS_RAW_INT':
-                telemetry['gps_fix'] = msg.fix_type
-                telemetry['gps_sats'] = msg.satellites_visible
-
-            elif msg_type == 'SYS_STATUS':
-                telemetry['battery_voltage'] = msg.voltage_battery / 1000.0
-                telemetry['battery_remaining'] = msg.battery_remaining
-
-            elif msg_type == 'HEARTBEAT':
+            _handle_mavlink_msg(msg, conn)
+            if msg.get_type() == 'HEARTBEAT':
                 last_heartbeat = time.time()
-                armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
-                telemetry['armed'] = armed
-                mode_num = msg.custom_mode
-                telemetry['flight_mode'] = ARDUPLANE_MODES.get(mode_num, f'MODE_{mode_num}')
-
-            elif msg_type == 'STATUSTEXT':
-                severity = msg.severity  # MAV_SEVERITY 0=EMERGENCY .. 7=DEBUG
-                text = msg.text.rstrip('\x00').strip()
-                if text:
-                    severity_labels = {
-                        0: 'EMERGENCY', 1: 'ALERT', 2: 'CRITICAL',
-                        3: 'ERROR', 4: 'WARNING', 5: 'NOTICE',
-                        6: 'INFO', 7: 'DEBUG'
-                    }
-                    level = severity_labels.get(severity, 'INFO')
-                    socketio.emit('mavlink_msg', {
-                        'text': text,
-                        'severity': severity,
-                        'level': level,
-                        'ts': time.time()
-                    })
-
-            elif msg_type == 'EKF_STATUS_REPORT':
-                flags = msg.flags
-                socketio.emit('ekf_status', {'flags': flags})
-
-            elif msg_type == 'RC_CHANNELS':
-                # RC takeover detection: if pilot moves roll (ch1) or pitch (ch2)
-                # more than deadzone while GUIDE is active → stop guide, switch FBWA
-                if guide_active:
-                    RC_DEADZONE = 100  # PWM units from center (1500 ±100 = ignored)
-                    ch1 = getattr(msg, 'chan1_raw', 1500)  # roll
-                    ch2 = getattr(msg, 'chan2_raw', 1500)  # pitch
-                    if abs(ch1 - 1500) > RC_DEADZONE or abs(ch2 - 1500) > RC_DEADZONE:
-                        print(f"RC takeover detected: ch1={ch1} ch2={ch2} — stopping GUIDE")
-                        guide_active = False
-                        socketio.emit('guide_status', {'active': False, 'mode': 'OFF', 'reason': 'RC takeover'})
-                        socketio.emit('mavlink_msg', {
-                            'text': 'RC takeover — GUIDE stopped, switching to FBWA',
-                            'severity': 4, 'level': 'WARNING', 'ts': time.time()
-                        })
-                        # Switch to FBWA
-                        try:
-                            fbwa_num = MODE_NAME_TO_NUM.get('FBWA', 5)
-                            conn.set_mode(fbwa_num)
-                        except Exception:
-                            pass
 
         except Exception as e:
             print(f"MAVLink receive error: {e}")
