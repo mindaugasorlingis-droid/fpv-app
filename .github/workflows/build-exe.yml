@@ -24,7 +24,29 @@ jobs:
       run: pip install pymavlink flask flask-socketio opencv-python pyserial pyinstaller numpy websocket-client
 
     - name: Build EXE
-      run: pyinstaller --onefile --name "FPV-GroundStation" --add-data "static;static" --add-data "mediamtx.yml;." --add-data "backbone.onnx;." --add-data "neckhead.onnx;." --hidden-import=engineio.async_drivers.threading --hidden-import=flask_socketio --hidden-import=socketio --hidden-import=pymavlink --hidden-import=pymavlink.dialects --hidden-import=pymavlink.dialects.v20 --hidden-import=pymavlink.dialects.v20.ardupilotmega --collect-all flask_socketio --collect-all pymavlink --collect-all cv2 app.py
+      run: >
+        pyinstaller --onefile --name "FPV-GroundStation"
+        --add-data "static;static"
+        --add-data "mediamtx.yml;."
+        --add-data "backbone.onnx;."
+        --add-data "neckhead.onnx;."
+        --hidden-import=engineio.async_drivers.threading
+        --hidden-import=flask_socketio
+        --hidden-import=socketio
+        --hidden-import=pymavlink
+        --hidden-import=pymavlink.dialects
+        --hidden-import=pymavlink.dialects.v20
+        --hidden-import=pymavlink.dialects.v20.ardupilotmega
+        --hidden-import=websocket
+        --hidden-import=websocket._core
+        --hidden-import=websocket._abnf
+        --hidden-import=websocket._http
+        --hidden-import=websocket._utils
+        --collect-all flask_socketio
+        --collect-all pymavlink
+        --collect-all cv2
+        --collect-all websocket
+        app.py
 
     - name: Create package
       shell: powershell
@@ -43,6 +65,16 @@ jobs:
         Copy-Item neckhead.onnx dist\neckhead.onnx -ErrorAction SilentlyContinue
         Compress-Archive -Path dist\* -DestinationPath FPV-GroundStation-Windows.zip
 
+    - name: Verify ZIP exists
+      shell: powershell
+      run: |
+        if (!(Test-Path "FPV-GroundStation-Windows.zip")) {
+          Write-Error "ZIP file not found — build failed!"
+          exit 1
+        }
+        $size = (Get-Item "FPV-GroundStation-Windows.zip").Length
+        Write-Host "ZIP size: $([math]::Round($size/1MB, 1)) MB"
+
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
@@ -56,6 +88,7 @@ jobs:
         tag_name: v1.0.${{ github.run_number }}
         name: FPV Ground Station v1.0.${{ github.run_number }}
         files: FPV-GroundStation-Windows.zip
+        fail_on_unmatched_files: true
         body: |
           ## FPV Ground Station for Windows
           1. Extract ZIP
