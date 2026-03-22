@@ -158,8 +158,9 @@ def make_connection(cs):
             except _socket.timeout:
                 continue
 
-        # Switch to non-blocking after we know who the drone is
-        sock.settimeout(5.0)  # recv timeout for heartbeat detection
+        # Use non-blocking so pymavlink recv() returns "" instead of raising socket.timeout
+        # pymavlink handles EAGAIN/EWOULDBLOCK correctly — socket.timeout it does NOT
+        sock.setblocking(False)
 
         # Build mavudp server-style: knows remote endpoint
         conn = mavutil.mavudp.__new__(mavutil.mavudp)
@@ -176,8 +177,11 @@ def make_connection(cs):
                                  f'udpin:{remote_addr[0]}:{remote_addr[1]}',
                                  source_system=255, source_component=0,
                                  input=False)
-        # Feed first packet into mavlink parser
-        conn.mav.parse_buffer(data)
+        # Parse first packet — this may set target_system if it's a HEARTBEAT
+        try:
+            conn.mav.parse_buffer(data)
+        except Exception:
+            pass
         return conn
 
     elif cs.startswith('udpout:') or cs.startswith('udp:'):
@@ -230,11 +234,20 @@ def connect_mavlink(connection_string=None):
         conn = None
         try:
             conn = make_connection(cs)
-            # For UDPCI: make_connection already waited for first packet from drone.
-            # For udpout/TCP: still need to wait for heartbeat.
-            if not cs.startswith('udpin:'):
-                print("Waiting for heartbeat...")
-                conn.wait_heartbeat(timeout=30)
+
+            # Wait until we know target_system (need a HEARTBEAT from vehicle)
+            # make_connection(udpin) already has first packet, but may not be HEARTBEAT
+            # For non-udpin we explicitly wait
+            print("Waiting for vehicle heartbeat...")
+            deadline = time.time() + 30
+            while conn.target_system == 0 and time.time() < deadline:
+                if mav_stop_event.is_set():
+                    raise Exception("Cancelled")
+                m = conn.recv_match(type='HEARTBEAT', blocking=False)
+                if m is None:
+                    time.sleep(0.05)
+            if conn.target_system == 0:
+                raise Exception("No heartbeat received in 30s")
             print(f"MAVLink connected: sys={conn.target_system} comp={conn.target_component}")
 
             # Request all telemetry streams at 10Hz (like Mission Planner)
@@ -273,29 +286,39 @@ def connect_mavlink(connection_string=None):
 
 
 def receive_loop(conn):
-    """Receive and process MAVLink messages."""
+    """Receive and process MAVLink messages.
+
+    Uses non-blocking recv + select() so we never block indefinitely.
+    pymavlink handles EAGAIN/EWOULDBLOCK correctly; socket.timeout it does NOT.
+    """
+    import select as _select
     global telemetry
     # For serial: flush stale buffer before starting
     try:
         if hasattr(conn, 'port') and hasattr(conn.port, 'flushInput'):
             conn.port.flushInput()
-        # Drain any buffered packets quickly
-        for _ in range(200):
-            m = conn.recv_match(blocking=False)
-            if m is None:
-                break
     except Exception:
         pass
 
     last_heartbeat = time.time()
     while True:
         try:
-            msg = conn.recv_match(blocking=True, timeout=5)
-            if msg is None:
-                # 5s timeout — check if drone went silent
+            # Wait up to 1s for data (select avoids busy-spin without blocking forever)
+            try:
+                fd = conn.port.fileno() if hasattr(conn, 'port') else conn.fd
+                r, _, _ = _select.select([fd], [], [], 1.0)
+            except Exception:
+                r = [True]  # fallback — just try recv
+
+            if not r:
+                # 1s passed, no data — check heartbeat timeout
                 if time.time() - last_heartbeat > 15:
                     print("MAVLink: no heartbeat for 15s — reconnecting")
                     break
+                continue
+
+            msg = conn.recv_match(blocking=False)
+            if msg is None:
                 continue
             msg_type = msg.get_type()
             if msg_type == 'ATTITUDE':
