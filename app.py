@@ -839,14 +839,14 @@ def api_preflight_calibration():
         return jsonify({'error': 'MAVLink not connected'}), 503
     try:
         # MAV_CMD_PREFLIGHT_CALIBRATION (241)
-        # param1=1: gyro, param2=1: mag, param3=1: pressure/baro, param5=1: accel
+        # param3=1: airspeed/pressure sensor calibration
         conn.mav.command_long_send(
             conn.target_system, conn.target_component,
             mavutil.mavlink.MAV_CMD_PREFLIGHT_CALIBRATION,
             0,  # confirmation
-            1,  # param1: gyro calibration
+            0,  # param1: gyro
             0,  # param2: magnetometer
-            0,  # param3: pressure
+            1,  # param3: airspeed/pressure calibration
             0,  # param4: radio
             0,  # param5: accelerometer
             0, 0

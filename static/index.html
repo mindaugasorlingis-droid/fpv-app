@@ -622,7 +622,7 @@
   <button class="btn btn-action" onclick="apiRestartMission()">↺ RESTART MISSION</button>
 
   <h3>Preflight</h3>
-  <button class="btn btn-action" onclick="apiPreflightCalibration()" style="background:rgba(52,152,219,0.2);border-color:#3498db;color:#3498db;">⚙ CALIBRATION</button>
+  <button class="btn btn-action" onclick="apiPreflightCalibration()" style="background:rgba(52,152,219,0.2);border-color:#3498db;color:#3498db;">⚙ AIRSPEED CAL</button>
   <button class="btn btn-action" onclick="apiPreflightReboot()" style="background:rgba(243,156,18,0.2);border-color:#f39c12;color:#f39c12;" onclick="if(!confirm('Reboot autopilot?'))return">↺ REBOOT</button>
   <button class="btn btn-action" onclick="apiPreflightShutdown()" style="background:rgba(231,76,60,0.2);border-color:#e74c3c;color:#e74c3c;">⏻ SHUTDOWN</button>
 
@@ -1419,12 +1419,12 @@ async function apiRestartMission() {
 }
 
 async function apiPreflightCalibration() {
-  if (!confirm('Pradėti Preflight Calibration (gyro)? Dronas turi būti stacionarus.')) return;
+  if (!confirm('Kalibruoti Airspeed sensorių? Dronas turi stovėti, vėjo neturi būti.')) return;
   try {
     const r = await fetch('/api/preflight_calibration', { method: 'POST' });
     const d = await r.json();
     if (d.error) alert('Calibration error: ' + d.error);
-    else addMessage('NOTICE', '⚙ Preflight calibration started');
+    else addMessage('NOTICE', '⚙ Airspeed calibration started');
   } catch(e) { alert('Request failed: ' + e.message); }
 }
 
