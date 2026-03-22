@@ -71,11 +71,12 @@ jobs:
       shell: powershell
       run: |
         if (!(Test-Path "FPV-GroundStation-Windows.zip")) {
-          Write-Error "ZIP file not found — build failed!"
+          Write-Error "ZIP file not found - build failed!"
           exit 1
         }
         $size = (Get-Item "FPV-GroundStation-Windows.zip").Length
-        Write-Host "ZIP size: $([math]::Round($size/1MB, 1)) MB"
+        $sizeMB = [math]::Round($size / 1MB, 1)
+        Write-Host "ZIP size: $sizeMB MB"
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
