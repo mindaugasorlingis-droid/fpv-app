@@ -111,7 +111,7 @@
     align-items: center;
     gap: 10px;
   }
-  #horizonCanvas { display: block; }
+  #horizonCanvas { display: block; border-radius: 10px; }
 
   #guidance-panel {
     display: none;
@@ -487,7 +487,7 @@
 
   <!-- CENTER LEFT: Artificial Horizon + Guidance -->
   <div id="osd-horizon" class="osd-el">
-    <canvas id="horizonCanvas" width="130" height="130"></canvas>
+    <canvas id="horizonCanvas" width="200" height="220"></canvas>
     <div id="guidance-panel">
       <div class="gd-row"><span class="gd-label">AZIMUTH</span><span class="gd-val" id="gd-az">—</span></div>
       <div class="gd-row"><span class="gd-label">ELEVATION</span><span class="gd-val" id="gd-el">—</span></div>
@@ -1034,89 +1034,157 @@ function updateFlightStats(d) {
 // ── ARTIFICIAL HORIZON ─────────────────────────────────────────────────────
 const hCanvas = document.getElementById('horizonCanvas');
 const hCtx = hCanvas.getContext('2d');
-const HW = 130, HH = 130, CX = HW/2, CY = HH/2, R = 55;
+const HW = 200, HH = 220;
+const HCX = HW / 2, HCY = HH / 2 - 10;
+const H_R = 88; // ADI radius
+const PX_PER_DEG = 4.5; // pitch ladder scale
 
 function drawHorizon(rollDeg, pitchDeg) {
+  const roll = rollDeg * Math.PI / 180;
   hCtx.clearRect(0, 0, HW, HH);
 
-  const roll = rollDeg * Math.PI / 180;
-  const pitchOffset = pitchDeg * 1.5; // pixels per degree
+  // ── Background ──
+  hCtx.fillStyle = '#111';
+  hCtx.fillRect(0, 0, HW, HH);
 
-  // Clip to circle
+  // ── ADI sphere (clip to circle) ──
   hCtx.save();
   hCtx.beginPath();
-  hCtx.arc(CX, CY, R, 0, Math.PI * 2);
+  hCtx.arc(HCX, HCY, H_R, 0, Math.PI * 2);
   hCtx.clip();
 
-  // Sky and ground split by pitch + roll
   hCtx.save();
-  hCtx.translate(CX, CY);
+  hCtx.translate(HCX, HCY);
   hCtx.rotate(roll);
 
-  // Ground (bottom)
-  hCtx.fillStyle = '#6b3a1f';
-  hCtx.fillRect(-R, -pitchOffset, R*2, R*2 + pitchOffset);
+  const pOff = pitchDeg * PX_PER_DEG;
 
-  // Sky (top)
-  hCtx.fillStyle = '#1a3a5c';
-  hCtx.fillRect(-R, -R*2, R*2, R*2 - pitchOffset);
+  // Sky gradient
+  const skyGrad = hCtx.createLinearGradient(0, -H_R*2, 0, -pOff);
+  skyGrad.addColorStop(0, '#0d3b6e');
+  skyGrad.addColorStop(1, '#1565a8');
+  hCtx.fillStyle = skyGrad;
+  hCtx.fillRect(-H_R, -H_R*2, H_R*2, H_R*2 - pOff + 1);
+
+  // Ground gradient
+  const gndGrad = hCtx.createLinearGradient(0, -pOff, 0, H_R*2);
+  gndGrad.addColorStop(0, '#7a4a1e');
+  gndGrad.addColorStop(1, '#3d2010');
+  hCtx.fillStyle = gndGrad;
+  hCtx.fillRect(-H_R, -pOff, H_R*2, H_R*2);
 
   // Horizon line
   hCtx.strokeStyle = '#fff';
   hCtx.lineWidth = 1.5;
   hCtx.beginPath();
-  hCtx.moveTo(-R, -pitchOffset);
-  hCtx.lineTo(R, -pitchOffset);
+  hCtx.moveTo(-H_R, -pOff);
+  hCtx.lineTo(H_R, -pOff);
   hCtx.stroke();
 
-  hCtx.restore();
-  hCtx.restore();
+  // ── Pitch ladder ──
+  hCtx.font = 'bold 9px Arial';
+  hCtx.textAlign = 'center';
+  for (let deg = -30; deg <= 30; deg += 5) {
+    if (deg === 0) continue;
+    const y = -pOff - deg * PX_PER_DEG;
+    const isLong = deg % 10 === 0;
+    const w = isLong ? 28 : 16;
+    hCtx.strokeStyle = 'rgba(255,255,255,0.85)';
+    hCtx.lineWidth = isLong ? 1.2 : 0.8;
+    hCtx.beginPath();
+    hCtx.moveTo(-w, y); hCtx.lineTo(w, y);
+    hCtx.stroke();
+    if (isLong) {
+      hCtx.fillStyle = '#fff';
+      hCtx.fillText(Math.abs(deg), -w - 12, y + 3);
+      hCtx.fillText(Math.abs(deg), w + 12, y + 3);
+    }
+  }
 
-  // Outer ring
-  hCtx.beginPath();
-  hCtx.arc(CX, CY, R, 0, Math.PI * 2);
-  hCtx.strokeStyle = 'rgba(190,214,0,0.6)';
-  hCtx.lineWidth = 2;
-  hCtx.stroke();
+  hCtx.restore(); // un-rotate
 
-  // Center crosshair (fixed, not rotating)
-  hCtx.strokeStyle = '#BED600';
-  hCtx.lineWidth = 2;
-  // left wing
+  // ── Fixed aircraft symbol ──
+  hCtx.strokeStyle = '#FFD700';
+  hCtx.lineWidth = 2.5;
+  // Left wing
   hCtx.beginPath();
-  hCtx.moveTo(CX - 30, CY);
-  hCtx.lineTo(CX - 10, CY);
+  hCtx.moveTo(HCX - H_R*0.55, HCY);
+  hCtx.lineTo(HCX - H_R*0.2, HCY);
+  hCtx.lineTo(HCX - H_R*0.2, HCY + 6);
   hCtx.stroke();
-  // right wing
+  // Right wing
   hCtx.beginPath();
-  hCtx.moveTo(CX + 10, CY);
-  hCtx.lineTo(CX + 30, CY);
+  hCtx.moveTo(HCX + H_R*0.55, HCY);
+  hCtx.lineTo(HCX + H_R*0.2, HCY);
+  hCtx.lineTo(HCX + H_R*0.2, HCY + 6);
   hCtx.stroke();
-  // center dot
+  // Center dot
   hCtx.beginPath();
-  hCtx.arc(CX, CY, 3, 0, Math.PI * 2);
-  hCtx.fillStyle = '#BED600';
+  hCtx.arc(HCX, HCY, 3, 0, Math.PI * 2);
+  hCtx.fillStyle = '#FFD700';
   hCtx.fill();
 
-  // Roll indicator tick at top
-  hCtx.save();
-  hCtx.translate(CX, CY);
-  hCtx.rotate(roll);
-  hCtx.strokeStyle = '#fff';
-  hCtx.lineWidth = 2;
+  hCtx.restore(); // un-clip
+
+  // ── Roll arc + ticks ──
+  const arcR = H_R + 6;
+  hCtx.strokeStyle = 'rgba(255,255,255,0.5)';
+  hCtx.lineWidth = 1;
   hCtx.beginPath();
-  hCtx.moveTo(0, -R + 2);
-  hCtx.lineTo(0, -R + 10);
+  hCtx.arc(HCX, HCY, arcR, Math.PI * 1.1, Math.PI * 1.9);
   hCtx.stroke();
+
+  const rollTicks = [-60,-45,-30,-20,-10,0,10,20,30,45,60];
+  rollTicks.forEach(t => {
+    const a = (t - 90) * Math.PI / 180;
+    const inner = t % 30 === 0 ? arcR - 7 : arcR - 4;
+    hCtx.strokeStyle = t === 0 ? '#FFD700' : 'rgba(255,255,255,0.7)';
+    hCtx.lineWidth = t === 0 ? 2 : 1;
+    hCtx.beginPath();
+    hCtx.moveTo(HCX + arcR * Math.cos(a), HCY + arcR * Math.sin(a));
+    hCtx.lineTo(HCX + inner * Math.cos(a), HCY + inner * Math.sin(a));
+    hCtx.stroke();
+  });
+
+  // Roll pointer triangle (rotates)
+  hCtx.save();
+  hCtx.translate(HCX, HCY);
+  hCtx.rotate(roll);
+  hCtx.fillStyle = '#FFD700';
+  hCtx.beginPath();
+  hCtx.moveTo(0, -(arcR - 1));
+  hCtx.lineTo(-5, -(arcR + 9));
+  hCtx.lineTo(5, -(arcR + 9));
+  hCtx.closePath();
+  hCtx.fill();
   hCtx.restore();
 
-  // Labels
-  hCtx.fillStyle = 'rgba(0,0,0,0.6)';
-  hCtx.fillRect(0, HH-20, HW, 20);
+  // ── Slip indicator (ball) — centered under ADI ──
+  const ballY = HCY + H_R + 14;
+  hCtx.strokeStyle = 'rgba(255,255,255,0.4)';
+  hCtx.lineWidth = 1;
+  hCtx.beginPath();
+  hCtx.rect(HCX - 20, ballY - 6, 40, 12);
+  hCtx.stroke();
+  // Ball (approximate from roll — real slip needs slip sensor)
+  const ballX = HCX - Math.sin(roll) * 15;
+  hCtx.beginPath();
+  hCtx.arc(ballX, ballY, 5, 0, Math.PI * 2);
   hCtx.fillStyle = '#fff';
-  hCtx.font = '10px Courier New';
-  hCtx.textAlign = 'center';
-  hCtx.fillText('R:' + rollDeg.toFixed(1) + '°  P:' + pitchDeg.toFixed(1) + '°', CX, HH-6);
+  hCtx.fill();
+
+  // ── Data strip: Roll & Pitch values ──
+  hCtx.fillStyle = 'rgba(0,0,0,0.75)';
+  hCtx.fillRect(0, HH - 28, HW, 28);
+
+  hCtx.font = 'bold 11px "Courier New"';
+  hCtx.textAlign = 'left';
+  hCtx.fillStyle = rollDeg > 30 || rollDeg < -30 ? '#f39c12' : '#BED600';
+  hCtx.fillText('ROL ' + (rollDeg >= 0 ? '+' : '') + rollDeg.toFixed(1) + '°', 8, HH - 10);
+
+  hCtx.textAlign = 'right';
+  hCtx.fillStyle = pitchDeg > 15 || pitchDeg < -10 ? '#f39c12' : '#BED600';
+  hCtx.fillText('PIT ' + (pitchDeg >= 0 ? '+' : '') + pitchDeg.toFixed(1) + '°', HW - 8, HH - 10);
 }
 
 // ── MILITARY HUD (center screen) ──────────────────────────────────────────
