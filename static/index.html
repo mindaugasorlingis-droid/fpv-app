@@ -280,6 +280,27 @@
     transform: none;
     top: 12px;
   }
+  #joystick-btn {
+    position: fixed;
+    z-index: 50;
+    pointer-events: all;
+    background: rgba(0,0,0,0.65);
+    border: 2px solid #555;
+    color: #888;
+    border-radius: 6px;
+    padding: 7px 14px;
+    font-size: 14px;
+    font-family: 'Courier New', monospace;
+    font-weight: bold;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    transition: all 0.2s;
+    left: 260px;
+    top: 12px;
+  }
+  #joystick-btn:hover { opacity: 0.85; }
+  #joystick-btn.active { border-color: #9b59b6; color: #9b59b6; background: rgba(155,89,182,0.15); }
+
   #guide-btn:hover { opacity: 0.85; }
   #guide-btn.active {
     animation: guide-pulse 1s ease-in-out infinite;
@@ -450,6 +471,9 @@
   <!-- GUIDE BUTTON -->
   <button id="guide-btn" onclick="toggleGuide()">◎ GUIDE</button>
 
+  <!-- JOYSTICK BUTTON -->
+  <button id="joystick-btn" onclick="toggleJoystick()" title="Gamepad/Joystick valdymas">🕹 JOYSTICK</button>
+
   <!-- OSD MODE BUTTONS -->
   <div id="osd-modes">
     <button class="osd-mode-btn" id="ob-MANUAL"  onclick="apiMode('MANUAL')">MANUAL</button>
@@ -596,6 +620,11 @@
   <h3>Actions</h3>
   <button class="btn btn-toggle" id="btnGps" onclick="apiDisableGps()">GPS DISABLE</button>
   <button class="btn btn-action" onclick="apiRestartMission()">↺ RESTART MISSION</button>
+
+  <h3>Preflight</h3>
+  <button class="btn btn-action" onclick="apiPreflightCalibration()" style="background:rgba(52,152,219,0.2);border-color:#3498db;color:#3498db;">⚙ CALIBRATION</button>
+  <button class="btn btn-action" onclick="apiPreflightReboot()" style="background:rgba(243,156,18,0.2);border-color:#f39c12;color:#f39c12;" onclick="if(!confirm('Reboot autopilot?'))return">↺ REBOOT</button>
+  <button class="btn btn-action" onclick="apiPreflightShutdown()" style="background:rgba(231,76,60,0.2);border-color:#e74c3c;color:#e74c3c;">⏻ SHUTDOWN</button>
 
   <h3>Kamera FOV</h3>
   <div style="display:flex;gap:6px;align-items:center;font-size:12px;">
@@ -1387,6 +1416,123 @@ async function apiRestartMission() {
     if (d.error) alert('Mission error: ' + d.error);
     else alert('Mission restarted!');
   } catch(e) { alert('Request failed: ' + e.message); }
+}
+
+async function apiPreflightCalibration() {
+  if (!confirm('Pradėti Preflight Calibration (gyro)? Dronas turi būti stacionarus.')) return;
+  try {
+    const r = await fetch('/api/preflight_calibration', { method: 'POST' });
+    const d = await r.json();
+    if (d.error) alert('Calibration error: ' + d.error);
+    else addMessage('NOTICE', '⚙ Preflight calibration started');
+  } catch(e) { alert('Request failed: ' + e.message); }
+}
+
+async function apiPreflightReboot() {
+  if (!confirm('Reboot autopilot?')) return;
+  try {
+    const r = await fetch('/api/preflight_reboot', { method: 'POST' });
+    const d = await r.json();
+    if (d.error) alert('Reboot error: ' + d.error);
+    else addMessage('WARNING', '↺ Autopilot rebooting...');
+  } catch(e) { alert('Request failed: ' + e.message); }
+}
+
+async function apiPreflightShutdown() {
+  if (!confirm('Shutdown autopilot?')) return;
+  try {
+    const r = await fetch('/api/preflight_shutdown', { method: 'POST' });
+    const d = await r.json();
+    if (d.error) alert('Shutdown error: ' + d.error);
+    else addMessage('WARNING', '⏻ Autopilot shutting down...');
+  } catch(e) { alert('Request failed: ' + e.message); }
+}
+
+// ── JOYSTICK (Gamepad API) ─────────────────────────────────────────────────
+let joystickEnabled = false;
+let joystickLoop = null;
+let gamepadIndex = null;
+
+window.addEventListener('gamepadconnected', (e) => {
+  gamepadIndex = e.gamepad.index;
+  addMessage('NOTICE', `🕹 Gamepad connected: ${e.gamepad.id}`);
+});
+window.addEventListener('gamepaddisconnected', (e) => {
+  gamepadIndex = null;
+  addMessage('WARNING', '🕹 Gamepad disconnected');
+  if (joystickEnabled) toggleJoystick();
+});
+
+function toggleJoystick() {
+  joystickEnabled = !joystickEnabled;
+  const btn = document.getElementById('joystick-btn');
+  if (joystickEnabled) {
+    btn.textContent = '🕹 JOY ON';
+    btn.classList.add('active');
+    addMessage('NOTICE', '🕹 Joystick enabled — press gamepad button or move axes');
+    joystickLoop = setInterval(processJoystick, 50); // 20Hz
+  } else {
+    btn.textContent = '🕹 JOYSTICK';
+    btn.classList.remove('active');
+    addMessage('INFO', '🕹 Joystick disabled');
+    if (joystickLoop) clearInterval(joystickLoop);
+    joystickLoop = null;
+  }
+}
+
+// Deadzone helper
+function deadzone(val, dz=0.1) {
+  if (Math.abs(val) < dz) return 0;
+  return (val - Math.sign(val) * dz) / (1 - dz);
+}
+
+let lastJsMode = null;
+function processJoystick() {
+  const gamepads = navigator.getGamepads ? navigator.getGamepads() : [];
+  const gp = gamepadIndex !== null ? gamepads[gamepadIndex] : gamepads[0];
+  if (!gp) return;
+
+  // Axes: 0=LeftX, 1=LeftY, 2=RightX, 3=RightY (standard gamepad layout)
+  const roll     = deadzone(gp.axes[2] || 0);  // Right stick X
+  const pitch    = deadzone(-(gp.axes[3] || 0)); // Right stick Y (inverted)
+  const yaw      = deadzone(gp.axes[0] || 0);  // Left stick X
+  const throttle = deadzone(-(gp.axes[1] || 0)); // Left stick Y (inverted)
+
+  // Buttons (standard): 0=A/Cross, 1=B/Circle, 2=X/Square, 3=Y/Triangle
+  // 4=LB, 5=RB, 8=Select/Share, 9=Start/Options
+  if (gp.buttons[9]?.pressed && lastJsMode !== 'start') { // Start → ARM
+    lastJsMode = 'start';
+    apiArm(true);
+  } else if (!gp.buttons[9]?.pressed && lastJsMode === 'start') {
+    lastJsMode = null;
+  }
+  if (gp.buttons[8]?.pressed && lastJsMode !== 'select') { // Select → DISARM
+    lastJsMode = 'select';
+    apiArm(false);
+  } else if (!gp.buttons[8]?.pressed && lastJsMode === 'select') {
+    lastJsMode = null;
+  }
+
+  // Mode shortcuts: Y=FBWA, A=MANUAL, B=RTL, X=AUTO
+  if (gp.buttons[3]?.pressed) apiMode('FBWA');
+  if (gp.buttons[0]?.pressed) apiMode('MANUAL');
+  if (gp.buttons[1]?.pressed) apiMode('RTL');
+  if (gp.buttons[2]?.pressed) apiMode('AUTO');
+
+  // Send RC override via backend if axes moved
+  if (roll !== 0 || pitch !== 0 || yaw !== 0 || throttle !== 0) {
+    const toPWM = (v) => Math.round(1500 + v * 400); // 1100-1900 range
+    fetch('/api/rc_override', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        roll: toPWM(roll),
+        pitch: toPWM(pitch),
+        throttle: toPWM(throttle),
+        yaw: toPWM(yaw)
+      })
+    }).catch(() => {});
+  }
 }
 
 // ── MJPEG VIDEO ────────────────────────────────────────────────────────────

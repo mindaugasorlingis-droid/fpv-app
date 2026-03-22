@@ -808,6 +808,91 @@ def api_restart_mission():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/rc_override', methods=['POST'])
+def api_rc_override():
+    data = request.get_json() or {}
+    with mav_lock:
+        conn = mav_connection
+    if not conn:
+        return jsonify({'error': 'MAVLink not connected'}), 503
+    try:
+        roll     = int(data.get('roll', 1500))
+        pitch    = int(data.get('pitch', 1500))
+        throttle = int(data.get('throttle', 1500))
+        yaw      = int(data.get('yaw', 1500))
+        # RC_CHANNELS_OVERRIDE: channels 1-8 (0=ignore)
+        conn.mav.rc_channels_override_send(
+            conn.target_system, conn.target_component,
+            roll, pitch, throttle, yaw,
+            0, 0, 0, 0  # ch5-ch8 ignore
+        )
+        return jsonify({'ok': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/preflight_calibration', methods=['POST'])
+def api_preflight_calibration():
+    with mav_lock:
+        conn = mav_connection
+    if not conn:
+        return jsonify({'error': 'MAVLink not connected'}), 503
+    try:
+        # MAV_CMD_PREFLIGHT_CALIBRATION (241)
+        # param1=1: gyro, param2=1: mag, param3=1: pressure/baro, param5=1: accel
+        conn.mav.command_long_send(
+            conn.target_system, conn.target_component,
+            mavutil.mavlink.MAV_CMD_PREFLIGHT_CALIBRATION,
+            0,  # confirmation
+            1,  # param1: gyro calibration
+            0,  # param2: magnetometer
+            0,  # param3: pressure
+            0,  # param4: radio
+            0,  # param5: accelerometer
+            0, 0
+        )
+        return jsonify({'ok': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/preflight_reboot', methods=['POST'])
+def api_preflight_reboot():
+    with mav_lock:
+        conn = mav_connection
+    if not conn:
+        return jsonify({'error': 'MAVLink not connected'}), 503
+    try:
+        # MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN (246)
+        # param1=1: reboot autopilot
+        conn.mav.command_long_send(
+            conn.target_system, conn.target_component,
+            mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
+            0, 1, 0, 0, 0, 0, 0, 0
+        )
+        return jsonify({'ok': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/preflight_shutdown', methods=['POST'])
+def api_preflight_shutdown():
+    with mav_lock:
+        conn = mav_connection
+    if not conn:
+        return jsonify({'error': 'MAVLink not connected'}), 503
+    try:
+        # param1=2: shutdown autopilot
+        conn.mav.command_long_send(
+            conn.target_system, conn.target_component,
+            mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
+            0, 2, 0, 0, 0, 0, 0, 0
+        )
+        return jsonify({'ok': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 # ─── SocketIO events ──────────────────────────────────────────────────────────
 
 @socketio.on('connect')
