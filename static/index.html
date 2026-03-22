@@ -520,8 +520,15 @@
 
   <h3>Video ryšys</h3>
   <div style="display:flex;flex-direction:column;gap:6px;">
+    <select id="videoMode" onchange="videoModeChange()" style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;">
+      <option value="rtsp">RTSP (FFmpeg, low-latency)</option>
+      <option value="gst">GStreamer pipeline</option>
+    </select>
     <input id="rtspUrl" type="text" value="rtsp://192.168.144.25:8554/main.264" placeholder="RTSP URL"
       style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:11px;width:100%;box-sizing:border-box;"/>
+    <div id="gstHint" style="display:none;font-size:10px;color:#888;word-break:break-all;">
+      Pvz: gst:rtspsrc location=rtsp://192.168.144.25:8554/main.264 latency=0 ! rtph264depay ! avdec_h264 ! videoconvert ! appsink
+    </div>
     <div style="display:flex;gap:6px;">
       <button class="btn btn-arm" style="flex:1;font-size:12px;" onclick="connectVideoUrl()">▶ Jungti</button>
       <button class="btn btn-disarm" style="flex:1;font-size:12px;" onclick="toggleVideo()">■ Atjungti</button>
@@ -1308,6 +1315,25 @@ async function startTrackerApi(box) {
     drawRect = null;
     alert('Tracker klaida: ' + (d.error || 'Nepavyko'));
     renderTrackCanvas();
+  }
+}
+
+function videoModeChange() {
+  const mode = document.getElementById('videoMode').value;
+  const hint = document.getElementById('gstHint');
+  const inp = document.getElementById('rtspUrl');
+  if (mode === 'gst') {
+    hint.style.display = 'block';
+    if (!inp.value.startsWith('gst:')) {
+      const cur = inp.value.replace(/^gst:/, '');
+      inp.value = 'gst:rtspsrc location=' + (cur || 'rtsp://192.168.144.25:8554/main.264') + ' latency=0 ! rtph264depay ! avdec_h264 ! videoconvert ! appsink drop=true max-buffers=1';
+    }
+  } else {
+    hint.style.display = 'none';
+    if (inp.value.startsWith('gst:')) {
+      const m = inp.value.match(/location=(\S+)/);
+      inp.value = m ? m[1] : 'rtsp://192.168.144.25:8554/main.264';
+    }
   }
 }
 

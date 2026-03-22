@@ -592,6 +592,9 @@ def on_disconnect():
 
 # ─── Video Stream ─────────────────────────────────────────────────────────────
 RTSP_URL = 'rtsp://192.168.144.25:8554/main.264'  # SIYI camera
+# GStreamer pipeline mode: set RTSP_URL to a pipeline string starting with "gst:"
+# Example: gst:rtspsrc location=rtsp://192.168.144.25:8554/main.264 latency=0 ! rtph264depay ! avdec_h264 ! videoconvert ! appsink
+# This runs gst-launch-1.0 and pipes frames via stdout (fdsink + rawvideo)
 
 video_frame = None
 raw_frame = None  # Unencoded frame for tracker
@@ -787,15 +790,41 @@ def video_capture_loop():
         cap = None
         try:
             if CV2_AVAILABLE:
-                os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;udp|fflags;nobuffer|flags;low_delay|framedrop;1'
-                cap = cv2.VideoCapture(RTSP_URL, cv2.CAP_FFMPEG)
-                if not cap.isOpened():
-                    os.environ.pop('OPENCV_FFMPEG_CAPTURE_OPTIONS', None)
-                    cap = cv2.VideoCapture(RTSP_URL)
+                url = RTSP_URL
+                if url.startswith('gst:'):
+                    # GStreamer pipeline mode (like Mission Planner)
+                    # Strip "gst:" prefix, append appsink if not present
+                    pipeline = url[4:].strip()
+                    if 'appsink' not in pipeline:
+                        pipeline += ' ! videoconvert ! appsink drop=true max-buffers=1'
+                    print(f"Video: GStreamer pipeline: {pipeline}")
+                    cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+                    if not cap.isOpened():
+                        print("Video: GStreamer not available in cv2, falling back to FFmpeg")
+                        # Fallback: try to extract rtsp URL from pipeline
+                        import re
+                        m = re.search(r'location=(\S+)', pipeline)
+                        url = m.group(1) if m else url[4:]
+                        cap = None
+                if cap is None:
+                    # FFmpeg mode — low latency flags like Mission Planner
+                    os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = (
+                        'rtsp_transport;udp|'
+                        'fflags;nobuffer|'
+                        'flags;low_delay|'
+                        'framedrop;1|'
+                        'probesize;32|'
+                        'analyzeduration;0|'
+                        'max_delay;0'
+                    )
+                    cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+                    if not cap.isOpened():
+                        os.environ.pop('OPENCV_FFMPEG_CAPTURE_OPTIONS', None)
+                        cap = cv2.VideoCapture(url)
                 if not cap.isOpened():
                     print(f"Video: cannot open {RTSP_URL}")
                     video_active = False
-                    socketio.emit('video_status', {'connected': False, 'error': 'Cannot connect to RTSP'})
+                    socketio.emit('video_status', {'connected': False, 'error': 'Cannot open stream'})
                     continue
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                 cap.set(cv2.CAP_PROP_FPS, 30)
