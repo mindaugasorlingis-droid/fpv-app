@@ -73,6 +73,7 @@ telemetry = {
     'flight_mode': 'UNKNOWN',
     'lat': 0.0,
     'lon': 0.0,
+    'throttle': 0,
 }
 
 gps_disabled = False
@@ -308,6 +309,7 @@ def receive_loop(conn):
                 telemetry['groundspeed'] = msg.groundspeed
                 telemetry['heading'] = msg.heading
                 telemetry['altitude_rel'] = msg.alt
+                telemetry['throttle'] = msg.throttle  # 0-100%
 
             elif msg_type == 'GLOBAL_POSITION_INT':
                 telemetry['lat'] = msg.lat / 1e7
