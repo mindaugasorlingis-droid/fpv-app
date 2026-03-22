@@ -330,6 +330,27 @@ def receive_loop(conn):
                 mode_num = msg.custom_mode
                 telemetry['flight_mode'] = ARDUPLANE_MODES.get(mode_num, f'MODE_{mode_num}')
 
+            elif msg_type == 'STATUSTEXT':
+                severity = msg.severity  # MAV_SEVERITY 0=EMERGENCY .. 7=DEBUG
+                text = msg.text.rstrip('\x00').strip()
+                if text:
+                    severity_labels = {
+                        0: 'EMERGENCY', 1: 'ALERT', 2: 'CRITICAL',
+                        3: 'ERROR', 4: 'WARNING', 5: 'NOTICE',
+                        6: 'INFO', 7: 'DEBUG'
+                    }
+                    level = severity_labels.get(severity, 'INFO')
+                    socketio.emit('mavlink_msg', {
+                        'text': text,
+                        'severity': severity,
+                        'level': level,
+                        'ts': time.time()
+                    })
+
+            elif msg_type == 'EKF_STATUS_REPORT':
+                flags = msg.flags
+                socketio.emit('ekf_status', {'flags': flags})
+
         except Exception as e:
             print(f"MAVLink receive error: {e}")
             break
