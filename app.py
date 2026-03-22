@@ -1173,6 +1173,65 @@ def yolo_detection_loop():
             print(f"YOLO detection error: {e}")
 
 
+def tracker_loop():
+    """Runs tracker in its own thread — decoupled from video capture.
+    Reads raw_frame, runs NanoTrack update, emits result.
+    This way video capture never blocks waiting for tracker inference.
+    """
+    global tracker_bbox, tracker_active, tracker
+    import time as _time
+
+    while True:
+        # Wait for a new frame (max 100ms)
+        got = raw_frame_event.wait(timeout=0.1)
+        if not got:
+            continue
+
+        with tracker_lock:
+            if not tracker_active or tracker is None:
+                time.sleep(0.01)
+                continue
+
+        # Grab current frame (fast, under lock)
+        with video_lock:
+            frame = raw_frame
+            raw_frame_event.clear()
+
+        if frame is None:
+            continue
+
+        # Make a copy so video_capture_loop can overwrite raw_frame safely
+        frame = frame.copy()
+        h, w = frame.shape[:2]
+        if w == 0 or h == 0:
+            continue
+
+        with tracker_lock:
+            if not tracker_active or tracker is None:
+                continue
+            try:
+                ok, bbox = tracker.update(frame)
+            except Exception as e:
+                print(f"Tracker error: {e}")
+                tracker_active = False
+                tracker_bbox = {'ok': False}
+                socketio.emit('tracker_box', {'ok': False, 'active': False})
+                continue
+
+        if ok:
+            tx, ty, tw, th = [int(v) for v in bbox]
+            nb = {
+                'x': tx / w, 'y': ty / h,
+                'w': tw / w, 'h': th / h,
+                'ok': True, 'active': True
+            }
+            tracker_bbox = nb
+            socketio.emit('tracker_box', nb)
+        else:
+            tracker_bbox = {'ok': False}
+            socketio.emit('tracker_box', {'ok': False, 'active': True})
+
+
 def video_capture_loop():
     global video_frame, raw_frame, frame_w, frame_h, video_running, video_active
     global tracker, tracker_bbox, tracker_active
@@ -1240,28 +1299,12 @@ def video_capture_loop():
                         frame_w, frame_h = w, h
                         socketio.emit('video_dims', {'w': w, 'h': h})
 
-                    # Run tracker
-                    with tracker_lock:
-                        if tracker_active and tracker is not None:
-                            ok, bbox = tracker.update(frame)
-                            if ok:
-                                tx, ty, tw, th = [int(v) for v in bbox]
-                                nb = {
-                                    'x': tx / w, 'y': ty / h,
-                                    'w': tw / w, 'h': th / h,
-                                    'ok': True, 'active': True
-                                }
-                                tracker_bbox = nb
-                                socketio.emit('tracker_box', nb)
-                            else:
-                                tracker_bbox = {'ok': False}
-                                socketio.emit('tracker_box', {'ok': False, 'active': True})
-
-                    # Save raw frame BEFORE encoding (for tracker init and YOLO)
+                    # Save raw frame for tracker thread (non-blocking)
                     with video_lock:
-                        raw_frame = frame.copy()
-                        raw_frame_event.set()  # signal that a frame is available
+                        raw_frame = frame  # no copy — tracker thread will copy if needed
+                        raw_frame_event.set()
 
+                    # Encode JPEG — tracker runs in its own thread, doesn't block here
                     _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
                     with video_lock:
                         video_frame = jpeg.tobytes()
@@ -1467,6 +1510,7 @@ if __name__ == '__main__':
     # Start video capture thread (waits for manual connect)
     if CV2_AVAILABLE:
         threading.Thread(target=video_capture_loop, daemon=True).start()
+        threading.Thread(target=tracker_loop, daemon=True).start()
     else:
         print("cv2 not available - video disabled")
 
