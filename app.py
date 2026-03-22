@@ -574,8 +574,7 @@ def on_disconnect():
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 # ─── Video Stream ─────────────────────────────────────────────────────────────
-RTSP_URL = os.path.expanduser('~/fpv-app/test_video.mp4')  # TEST: local video
-# RTSP_URL = 'rtsp://192.168.144.25:8554/main.264'  # Production
+RTSP_URL = 'rtsp://192.168.144.25:8554/main.264'  # SIYI camera
 
 video_frame = None
 raw_frame = None  # Unencoded frame for tracker

@@ -194,9 +194,9 @@
     letter-spacing: 0.1em;
     cursor: pointer;
     transition: color 0.2s, border-color 0.2s;
-    left: 50%;
-    transform: translateX(-50%);
-    top: calc(50% - 90px);
+    left: 130px;
+    transform: none;
+    top: 12px;
   }
   #guide-btn:hover { opacity: 0.85; }
   #guide-btn.active {
@@ -205,6 +205,37 @@
     border-color: #FF4444;
     background: rgba(0,0,0,0.75);
   }
+
+  /* ── OSD MODE BUTTONS ── */
+  #osd-modes {
+    position: fixed;
+    left: 14px;
+    top: 58px;
+    z-index: 30;
+    pointer-events: all;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .osd-mode-btn {
+    background: rgba(0,0,0,0.55);
+    border: 1.5px solid #555;
+    color: #aaa;
+    border-radius: 5px;
+    padding: 5px 14px;
+    font-size: 12px;
+    font-family: 'Courier New', monospace;
+    font-weight: bold;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    transition: all 0.15s;
+    min-width: 90px;
+    text-align: center;
+  }
+  .osd-mode-btn:hover { opacity: 0.85; border-color: #aaa; color: #fff; }
+  .osd-mode-btn.active { border-color: var(--green); color: var(--green); background: rgba(0,0,0,0.75); }
+  .osd-mode-btn.rtl    { border-color: #c0392b; color: #c0392b; }
+  .osd-mode-btn.rtl.active { background: rgba(192,57,43,0.2); }
 
   /* ── CONTROLS PANEL ── */
   #menuBtn {
@@ -334,8 +365,19 @@
     <div id="bat-bar-wrap"><div id="bat-bar" style="width:0%"></div></div>
   </div>
 
-  <!-- GUIDE BUTTON (above horizon, centered) -->
+  <!-- GUIDE BUTTON -->
   <button id="guide-btn" onclick="toggleGuide()">◎ GUIDE</button>
+
+  <!-- OSD MODE BUTTONS -->
+  <div id="osd-modes">
+    <button class="osd-mode-btn" id="ob-MANUAL"  onclick="apiMode('MANUAL')">MANUAL</button>
+    <button class="osd-mode-btn" id="ob-FBWA"    onclick="apiMode('FBWA')">FBWA</button>
+    <button class="osd-mode-btn" id="ob-AUTO"    onclick="apiMode('AUTO')">AUTO</button>
+    <button class="osd-mode-btn" id="ob-TAKEOFF" onclick="apiMode('TAKEOFF')">TAKEOFF</button>
+    <button class="osd-mode-btn rtl" id="ob-RTL" onclick="apiMode('RTL')">RTL</button>
+    <button class="osd-mode-btn" id="ob-GPS" onclick="apiDisableGps()" style="border-color:#f39c12;color:#f39c12;">GPS DISABLE</button>
+    <button class="osd-mode-btn" onclick="apiRestartMission()" style="border-color:#8e44ad;color:#8e44ad;">↺ RESTART</button>
+  </div>
 
   <!-- CENTER LEFT: Artificial Horizon + Guidance -->
   <div id="osd-horizon" class="osd-el">
@@ -476,7 +518,17 @@
     <span id="connLabel">Neprisijungta</span>
   </div>
 
-  <h3>MAVLink ryšys</h3>
+  <h3>Video ryšys</h3>
+  <div style="display:flex;flex-direction:column;gap:6px;">
+    <input id="rtspUrl" type="text" value="rtsp://192.168.144.25:8554/main.264" placeholder="RTSP URL"
+      style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:11px;width:100%;box-sizing:border-box;"/>
+    <div style="display:flex;gap:6px;">
+      <button class="btn btn-arm" style="flex:1;font-size:12px;" onclick="connectVideoUrl()">▶ Jungti</button>
+      <button class="btn btn-disarm" style="flex:1;font-size:12px;" onclick="toggleVideo()">■ Atjungti</button>
+    </div>
+  </div>
+
+<h3>MAVLink ryšys</h3>
   <div style="display:flex;flex-direction:column;gap:6px;">
 
     <!-- Connection type — like Mission Planner -->
@@ -738,12 +790,15 @@ function updateOSD(d) {
   // Flight stats
   updateFlightStats(d);
 
-  // Highlight active mode button
+  // Highlight active mode button (panel + OSD)
   if (d.flight_mode !== currentMode) {
     currentMode = d.flight_mode;
     document.querySelectorAll('.btn-mode').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.osd-mode-btn').forEach(b => b.classList.remove('active'));
     const mBtn = document.getElementById('m-' + d.flight_mode);
     if (mBtn) mBtn.classList.add('active');
+    const oBtn = document.getElementById('ob-' + d.flight_mode);
+    if (oBtn) oBtn.classList.add('active');
   }
 }
 
@@ -1193,6 +1248,8 @@ async function apiDisableGps() {
     const btn = document.getElementById('btnGps');
     btn.textContent = gpsDisabled ? 'GPS ENABLE' : 'GPS DISABLE';
     btn.classList.toggle('active', gpsDisabled);
+    const obGps = document.getElementById('ob-GPS');
+    if (obGps) { obGps.textContent = gpsDisabled ? 'GPS ENABLE' : 'GPS DISABLE'; obGps.style.borderColor = gpsDisabled ? '#27ae60' : '#f39c12'; obGps.style.color = gpsDisabled ? '#27ae60' : '#f39c12'; }
   } catch(e) { alert('Request failed: ' + e.message); }
 }
 
@@ -1254,6 +1311,27 @@ async function startTrackerApi(box) {
   }
 }
 
+async function connectVideoUrl() {
+  const url = document.getElementById('rtspUrl')?.value?.trim() || '';
+  const btn = document.getElementById('videoreconnectBtn');
+  btn.textContent = '⏳'; btn.disabled = true;
+  if (videoConnected) {
+    await fetch('/api/video/stop', {method: 'POST'});
+    video.src = '';
+    videoConnected = false;
+  }
+  await fetch('/api/video/start', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(url ? {url} : {})
+  });
+  setTimeout(() => {
+    video.src = '/video?' + Date.now();
+    btn.disabled = false;
+    setVideoBtn(true);
+  }, 500);
+}
+
 async function toggleVideo() {
   if (videoConnected) {
     // Disconnect
@@ -1263,15 +1341,8 @@ async function toggleVideo() {
     setVideoBtn(false);
     videoConnected = false;
   } else {
-    // Connect
-    const btn = document.getElementById('videoreconnectBtn');
-    btn.textContent = '⏳';
-    btn.disabled = true;
-    await fetch('/api/video/start', {method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}'});
-    setTimeout(() => {
-      video.src = '/video?' + Date.now();
-      btn.disabled = false;
-    }, 500);
+    // Connect using current URL field value
+    await connectVideoUrl();
   }
 }
 
