@@ -224,13 +224,15 @@ def make_connection(cs):
 
 def connect_mp_websocket(ws_url):
     """Connect to Mission Planner via ws://host:56781/websocket/raw
-    
-    MP sends/receives raw MAVLink bytes over this WebSocket.
-    We create a fake pymavlink connection backed by an in-memory pipe,
-    then forward bytes between the pipe and the WebSocket.
+
+    Strategy (Windows-safe, no pipes, no /dev/stdin):
+      1. Open UDP loopback pair: pymavlink listens on 127.0.0.1:LPORT
+      2. WebSocket → recv thread → forward bytes to pymavlink via UDP loopback
+      3. pymavlink.write() → override to send back via WebSocket
     """
     import websocket as _ws
-    import io
+    import socket as _socket
+    import types
     global mav_connection, mav_status, mav_stop_event, mp_ws
 
     print(f"MP WebSocket: connecting to {ws_url}")
@@ -239,75 +241,69 @@ def connect_mp_websocket(ws_url):
     mav_status['error'] = None
     mav_status['connection_string'] = ws_url
 
-    # Pipe pair: mp_write → pipe_r is what pymavlink reads from
-    pipe_r, pipe_w = os.pipe()
-    pipe_r_file = os.fdopen(pipe_r, 'rb', buffering=0)
-    pipe_w_file = os.fdopen(pipe_w, 'wb', buffering=0)
-
     ws_conn = None
+    udp_sender = None
+
     try:
+        # Step 1: connect WebSocket to MP
         ws_conn = _ws.create_connection(ws_url, timeout=10)
         with mp_ws_lock:
             mp_ws = ws_conn
-        print(f"MP WebSocket: connected")
+        print("MP WebSocket: connected")
 
-        # Build pymavlink connection over the read end of the pipe
+        # Step 2: find free loopback UDP port for pymavlink to listen on
+        tmp = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        tmp.bind(('127.0.0.1', 0))
+        lport = tmp.getsockname()[1]
+        tmp.close()
+
+        # Step 3: pymavlink listens on loopback port (udpin)
         conn = mavutil.mavlink_connection(
-            'file:///dev/stdin',
+            f'udpin:127.0.0.1:{lport}',
             source_system=255, source_component=0,
-            notimestamps=True,
         )
-        # Monkey-patch: redirect recv to our pipe, write to WebSocket
-        conn._pipe_r = pipe_r_file
-        conn._pipe_w = pipe_w_file
-        conn._ws = ws_conn
 
-        # Override conn.recv to read from pipe
-        import types
-        def _recv(self, n=None):
-            try:
-                return self._pipe_r.read(n or 1)
-            except Exception:
-                return b''
+        # Step 4: sender socket — sends bytes into pymavlink's listener
+        udp_sender = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        udp_sender.connect(('127.0.0.1', lport))
 
+        # Step 5: override conn.write → send via WebSocket instead of UDP
         def _write(self, buf):
             try:
                 with mp_ws_lock:
-                    if self._ws and self._ws.connected:
-                        self._ws.send_binary(bytes(buf))
+                    if mp_ws and mp_ws.connected:
+                        mp_ws.send_binary(bytes(buf))
             except Exception as e:
                 print(f"MP WS send error: {e}")
 
-        conn.recv = types.MethodType(_recv, conn)
         conn.write = types.MethodType(_write, conn)
 
-        # Thread: forward WebSocket → pipe
-        def ws_to_pipe():
+        # Step 6: WebSocket → UDP loopback forwarder thread
+        def ws_to_udp():
             while not mav_stop_event.is_set():
                 try:
                     data = ws_conn.recv()
-                    if data:
-                        if isinstance(data, str):
-                            data = data.encode()
-                        pipe_w_file.write(data)
-                        pipe_w_file.flush()
+                    if not data:
+                        continue
+                    if isinstance(data, str):
+                        data = data.encode('latin-1')
+                    udp_sender.send(data)
                 except Exception as e:
                     print(f"MP WS recv error: {e}")
                     break
-            try: pipe_w_file.close()
+            try: udp_sender.close()
             except: pass
 
-        t = threading.Thread(target=ws_to_pipe, daemon=True)
-        t.start()
+        threading.Thread(target=ws_to_udp, daemon=True).start()
 
-        # Wait for heartbeat to get target_system
+        # Step 7: wait for heartbeat → get target_system
         print("Waiting for vehicle heartbeat via MP...")
         deadline = time.time() + 30
         while conn.target_system == 0 and time.time() < deadline:
             if mav_stop_event.is_set():
                 raise Exception("Cancelled")
             try:
-                m = conn.recv_match(type='HEARTBEAT', blocking=False)
+                conn.recv_match(type='HEARTBEAT', blocking=False)
             except Exception:
                 pass
             time.sleep(0.05)
@@ -342,9 +338,7 @@ def connect_mp_websocket(ws_url):
             mp_ws = None
         try: ws_conn and ws_conn.close()
         except: pass
-        try: pipe_r_file.close()
-        except: pass
-        try: pipe_w_file.close()
+        try: udp_sender and udp_sender.close()
         except: pass
         socketio.emit('mavlink_status', {'connected': False, 'error': mav_status.get('error', 'Disconnected')})
 
