@@ -169,48 +169,60 @@ def make_connection(cs):
 
 
 def connect_mavlink(connection_string=None):
-    """Connect to MAVLink — single attempt, no auto-retry."""
+    """Connect to MAVLink — auto-reconnects on disconnect."""
     global mav_connection, mav_connect_string, mav_status, mav_stop_event
 
     if connection_string:
         mav_connect_string = connection_string
 
     mav_stop_event.clear()
-    try:
+
+    while not mav_stop_event.is_set():
         cs = mav_connect_string
         print(f"Connecting to MAVLink: {cs}")
         mav_status['connecting'] = True
         mav_status['connected'] = False
         mav_status['error'] = None
         mav_status['connection_string'] = cs
+        conn = None
+        try:
+            conn = make_connection(cs)
+            print("Waiting for heartbeat...")
+            conn.wait_heartbeat(timeout=30)
+            print(f"MAVLink connected: sys={conn.target_system} comp={conn.target_component}")
 
-        conn = make_connection(cs)
-        print("Waiting for heartbeat...")
-        conn.wait_heartbeat(timeout=30)
-        print(f"MAVLink connected: sys={conn.target_system} comp={conn.target_component}")
+            conn.mav.request_data_stream_send(
+                conn.target_system, conn.target_component,
+                mavutil.mavlink.MAV_DATA_STREAM_ALL, 10, 1
+            )
 
-        # Request all data streams (like Mission Planner)
-        conn.mav.request_data_stream_send(
-            conn.target_system, conn.target_component,
-            mavutil.mavlink.MAV_DATA_STREAM_ALL, 10, 1
-        )
+            with mav_lock:
+                mav_connection = conn
+            mav_status['connected'] = True
+            mav_status['connecting'] = False
+            mav_status['error'] = None
+            socketio.emit('mavlink_status', {'connected': True, 'error': None})
 
-        with mav_lock:
-            mav_connection = conn
-        mav_status['connected'] = True
-        mav_status['connecting'] = False
-        mav_status['error'] = None
-        receive_loop(conn)
-    except Exception as e:
-        print(f"MAVLink error: {e}")
-        mav_status['error'] = str(e)
-    finally:
-        mav_status['connected'] = False
-        mav_status['connecting'] = False
-        if not mav_status.get('error'):
-            mav_status['error'] = 'Disconnected'
-        with mav_lock:
-            mav_connection = None
+            receive_loop(conn)  # blocks until disconnect
+
+        except Exception as e:
+            print(f"MAVLink error: {e}")
+            mav_status['error'] = str(e)
+        finally:
+            mav_status['connected'] = False
+            mav_status['connecting'] = False
+            with mav_lock:
+                mav_connection = None
+            if conn:
+                try: conn.close()
+                except Exception: pass
+            socketio.emit('mavlink_status', {'connected': False, 'error': mav_status.get('error', 'Disconnected')})
+
+        if mav_stop_event.is_set():
+            break
+        print("MAVLink disconnected — reconnecting in 3s...")
+        mav_status['error'] = 'Reconnecting...'
+        time.sleep(3)
 
 
 def receive_loop(conn):
@@ -228,13 +240,17 @@ def receive_loop(conn):
     except Exception:
         pass
 
+    last_heartbeat = time.time()
     while True:
         try:
             msg = conn.recv_match(blocking=True, timeout=5)
             if msg is None:
+                # 5s timeout — check if drone went silent
+                if time.time() - last_heartbeat > 15:
+                    print("MAVLink: no heartbeat for 15s — reconnecting")
+                    break
                 continue
             msg_type = msg.get_type()
-
             if msg_type == 'ATTITUDE':
                 import math
                 telemetry['roll'] = math.degrees(msg.roll)
@@ -262,6 +278,7 @@ def receive_loop(conn):
                 telemetry['battery_remaining'] = msg.battery_remaining
 
             elif msg_type == 'HEARTBEAT':
+                last_heartbeat = time.time()
                 armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
                 telemetry['armed'] = armed
                 mode_num = msg.custom_mode
@@ -788,14 +805,17 @@ def video_capture_loop():
                 frame_delay = 1.0 / fps
                 last_frame_time = time.time()
 
+                consecutive_fails = 0
                 while video_running and video_active:
                     ret, frame = cap.read()
                     if not ret:
-                        # Loop video file
-                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                        ret, frame = cap.read()
-                        if not ret:
+                        consecutive_fails += 1
+                        if consecutive_fails > 10:
+                            print("Video: stream lost, reconnecting...")
                             break
+                        time.sleep(0.05)
+                        continue
+                    consecutive_fails = 0
 
                     # FPS throttle
                     now = time.time()
@@ -834,11 +854,11 @@ def video_capture_loop():
                     with video_lock:
                         video_frame = jpeg.tobytes()
 
-                socketio.emit('video_status', {'connected': False, 'error': 'Stream lost'})
+                socketio.emit('video_status', {'connected': False, 'error': 'Stream lost — reconnecting...'})
         except Exception as e:
             print(f"Video capture error: {e}")
             socketio.emit('video_status', {'connected': False, 'error': str(e)})
-            video_active = False
+            # Don't set video_active=False — keep trying if user wanted video
         finally:
             if cap:
                 cap.release()
@@ -846,7 +866,11 @@ def video_capture_loop():
                 video_frame = None
                 raw_frame = None
             raw_frame_event.clear()
-        time.sleep(1)
+        if video_active:
+            print("Video: reconnecting in 2s...")
+            time.sleep(2)
+        else:
+            time.sleep(0.5)
 
 
 def gen_frames():
