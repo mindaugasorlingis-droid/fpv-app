@@ -634,15 +634,25 @@
 
     <!-- Connection type — like Mission Planner -->
     <select id="mpConnType" onchange="mpTypeChange()" style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;">
+      <option value="mp" selected>🔗 Mission Planner (WebSocket)</option>
       <option value="udpci">UDP (UDPCI) — klausyti (dronas siunčia čia)</option>
-      <option value="udp" selected>UDP — siųsti į droną</option>
+      <option value="udp">UDP — siųsti į droną</option>
       <option value="tcp">TCP</option>
       <option value="serial">Serial/USB</option>
       <option value="bluetooth">Bluetooth</option>
     </select>
 
+    <!-- Mission Planner WebSocket fields -->
+    <div id="mpMPFields">
+      <input id="mpMPHost" type="text" value="127.0.0.1" placeholder="MP IP (127.0.0.1 jei lokaliai)"
+        style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;width:100%;box-sizing:border-box;margin-bottom:4px;"/>
+      <input id="mpMPPort" type="text" value="56781" placeholder="MP port (56781)"
+        style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;width:100%;box-sizing:border-box;"/>
+      <div style="font-size:10px;color:#666;margin-top:3px;">MP turi būti paleistas ir prijungtas prie drono</div>
+    </div>
+
     <!-- UDP / TCP fields -->
-    <div id="mpUdpFields">
+    <div id="mpUdpFields" style="display:none;">
       <input id="mpHost" type="text" value="0.0.0.0" placeholder="IP arba 0.0.0.0"
         style="background:#1a1a2e;color:#fff;border:1px solid #444;border-radius:6px;padding:6px 8px;font-size:12px;width:100%;box-sizing:border-box;margin-bottom:4px;"/>
       <input id="mpPort" type="text" value="19856" placeholder="Port"
@@ -742,13 +752,13 @@ function updateMavStatus(s) {
 }
 
 // ── MAVLink connection string helpers ─────────────────────────────────────
-// ── Mission Planner style connection ──────────────────────────────────────
+// ── Connection type change ──────────────────────────────────────────────────
 function mpTypeChange() {
   const t = document.getElementById('mpConnType').value;
+  document.getElementById('mpMPFields').style.display    = (t==='mp') ? 'block' : 'none';
   document.getElementById('mpUdpFields').style.display   = (t==='udpci'||t==='udp'||t==='tcp') ? 'block' : 'none';
   document.getElementById('mpSerialFields').style.display = (t==='serial') ? 'flex' : 'none';
   document.getElementById('mpBtFields').style.display    = (t==='bluetooth') ? 'block' : 'none';
-  // Set sensible defaults
   if (t==='udpci') {
     document.getElementById('mpHost').value = '0.0.0.0 (automatiškai)';
     document.getElementById('mpHost').disabled = true;
@@ -770,9 +780,11 @@ mpTypeChange();
 
 function buildConnString() {
   const t = document.getElementById('mpConnType').value;
-  if (t === 'udpci') {
-    // UDPCI always binds to 0.0.0.0 (listen on all interfaces)
-    // The IP field shows what IP drone sends TO (informational only)
+  if (t === 'mp') {
+    const host = document.getElementById('mpMPHost').value || '127.0.0.1';
+    const port = document.getElementById('mpMPPort').value || '56781';
+    return 'ws://' + host + ':' + port + '/websocket/raw';
+  } else if (t === 'udpci') {
     const port = document.getElementById('mpPort').value || '19856';
     return 'udpin:0.0.0.0:' + port;
   } else if (t === 'udp') {

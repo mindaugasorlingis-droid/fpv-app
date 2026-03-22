@@ -56,6 +56,13 @@ mav_status = {'connected': False, 'connecting': False, 'error': None, 'connectio
 mav_manual_only = True  # No auto-connect on startup
 mav_stop_event = threading.Event()
 
+# Mission Planner WebSocket bridge mode
+# When enabled, instead of direct UDP/serial, we connect to MP's ws://host:56781/websocket/raw
+# and pipe raw MAVLink bytes through it
+MP_WS_URL = None   # e.g. 'ws://192.168.1.100:56781/websocket/raw' — set via UI
+mp_ws = None       # websocket connection
+mp_ws_lock = threading.Lock()
+
 telemetry = {
     'roll': 0.0,
     'pitch': 0.0,
@@ -215,6 +222,133 @@ def make_connection(cs):
         return mavutil.mavlink_connection(cs, source_system=255, source_component=0)
 
 
+def connect_mp_websocket(ws_url):
+    """Connect to Mission Planner via ws://host:56781/websocket/raw
+    
+    MP sends/receives raw MAVLink bytes over this WebSocket.
+    We create a fake pymavlink connection backed by an in-memory pipe,
+    then forward bytes between the pipe and the WebSocket.
+    """
+    import websocket as _ws
+    import io
+    global mav_connection, mav_status, mav_stop_event, mp_ws
+
+    print(f"MP WebSocket: connecting to {ws_url}")
+    mav_status['connecting'] = True
+    mav_status['connected'] = False
+    mav_status['error'] = None
+    mav_status['connection_string'] = ws_url
+
+    # Pipe pair: mp_write → pipe_r is what pymavlink reads from
+    pipe_r, pipe_w = os.pipe()
+    pipe_r_file = os.fdopen(pipe_r, 'rb', buffering=0)
+    pipe_w_file = os.fdopen(pipe_w, 'wb', buffering=0)
+
+    ws_conn = None
+    try:
+        ws_conn = _ws.create_connection(ws_url, timeout=10)
+        with mp_ws_lock:
+            mp_ws = ws_conn
+        print(f"MP WebSocket: connected")
+
+        # Build pymavlink connection over the read end of the pipe
+        conn = mavutil.mavlink_connection(
+            'file:///dev/stdin',
+            source_system=255, source_component=0,
+            notimestamps=True,
+        )
+        # Monkey-patch: redirect recv to our pipe, write to WebSocket
+        conn._pipe_r = pipe_r_file
+        conn._pipe_w = pipe_w_file
+        conn._ws = ws_conn
+
+        # Override conn.recv to read from pipe
+        import types
+        def _recv(self, n=None):
+            try:
+                return self._pipe_r.read(n or 1)
+            except Exception:
+                return b''
+
+        def _write(self, buf):
+            try:
+                with mp_ws_lock:
+                    if self._ws and self._ws.connected:
+                        self._ws.send_binary(bytes(buf))
+            except Exception as e:
+                print(f"MP WS send error: {e}")
+
+        conn.recv = types.MethodType(_recv, conn)
+        conn.write = types.MethodType(_write, conn)
+
+        # Thread: forward WebSocket → pipe
+        def ws_to_pipe():
+            while not mav_stop_event.is_set():
+                try:
+                    data = ws_conn.recv()
+                    if data:
+                        if isinstance(data, str):
+                            data = data.encode()
+                        pipe_w_file.write(data)
+                        pipe_w_file.flush()
+                except Exception as e:
+                    print(f"MP WS recv error: {e}")
+                    break
+            try: pipe_w_file.close()
+            except: pass
+
+        t = threading.Thread(target=ws_to_pipe, daemon=True)
+        t.start()
+
+        # Wait for heartbeat to get target_system
+        print("Waiting for vehicle heartbeat via MP...")
+        deadline = time.time() + 30
+        while conn.target_system == 0 and time.time() < deadline:
+            if mav_stop_event.is_set():
+                raise Exception("Cancelled")
+            try:
+                m = conn.recv_match(type='HEARTBEAT', blocking=False)
+            except Exception:
+                pass
+            time.sleep(0.05)
+
+        if conn.target_system == 0:
+            raise Exception("No heartbeat from MP in 30s")
+
+        print(f"MP MAVLink: sys={conn.target_system} comp={conn.target_component}")
+        conn.mav.request_data_stream_send(
+            conn.target_system, conn.target_component,
+            mavutil.mavlink.MAV_DATA_STREAM_ALL, 10, 1
+        )
+
+        with mav_lock:
+            mav_connection = conn
+        mav_status['connected'] = True
+        mav_status['connecting'] = False
+        mav_status['error'] = None
+        socketio.emit('mavlink_status', {'connected': True, 'error': None, 'mode': 'MP'})
+
+        receive_loop(conn)
+
+    except Exception as e:
+        print(f"MP WebSocket error: {e}")
+        mav_status['error'] = str(e)
+    finally:
+        mav_status['connected'] = False
+        mav_status['connecting'] = False
+        with mav_lock:
+            mav_connection = None
+        with mp_ws_lock:
+            mp_ws = None
+        try: ws_conn and ws_conn.close()
+        except: pass
+        try: pipe_r_file.close()
+        except: pass
+        try: pipe_w_file.close()
+        except: pass
+        socketio.emit('mavlink_status', {'connected': False, 'error': mav_status.get('error', 'Disconnected')})
+
+
 def connect_mavlink(connection_string=None):
     """Connect to MAVLink — auto-reconnects on disconnect."""
     global mav_connection, mav_connect_string, mav_status, mav_stop_event
@@ -226,6 +360,18 @@ def connect_mavlink(connection_string=None):
 
     while not mav_stop_event.is_set():
         cs = mav_connect_string
+
+        # MP WebSocket bridge mode
+        if cs.startswith('mp:') or cs.startswith('ws://') or cs.startswith('wss://'):
+            ws_url = cs[3:] if cs.startswith('mp:') else cs
+            connect_mp_websocket(ws_url)
+            if mav_stop_event.is_set():
+                break
+            print("MP WebSocket disconnected — reconnecting in 3s...")
+            mav_status['error'] = 'Reconnecting...'
+            time.sleep(3)
+            continue
+
         print(f"Connecting to MAVLink: {cs}")
         mav_status['connecting'] = True
         mav_status['connected'] = False
