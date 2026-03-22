@@ -119,31 +119,77 @@ GPS_FIX_TYPES = {
 
 
 def make_connection(cs):
-    """Build pymavlink connection — Windows-safe.
-    
-    Windows problem: pymavlink calls setblocking(0) on socket, then later
-    tries socket operations that fail with WINERROR 10022 on non-blocking UDP.
-    
-    Fix: create socket, call connect() BEFORE setblocking(0), then patch into mavudp.
+    """Build MAVLink connection.
+
+    UDPCI (Mission Planner UdpSerial style):
+      - Bind to local port, wait for drone to send first packet
+      - Learn drone's IP:port from first received packet
+      - Send all replies back to that endpoint
+      - No connect() call — pure server/listen socket
+      - Uses blocking socket with timeout (no setblocking(False) issues on Windows)
+
+    UDP out:
+      - Windows-safe: create socket, connect() while blocking, then setblocking(False)
     """
     import socket as _socket
 
-    if cs.startswith('udpout:') or cs.startswith('udp:'):
+    if cs.startswith('udpin:'):
+        # UDPCI mode — exactly like Mission Planner UdpSerial.Open()
+        parts = cs.split(':', 2)
+        local_port = int(parts[2])
+        print(f"MAVLink UDPCI: binding to 0.0.0.0:{local_port}, waiting for drone...")
+
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        sock.settimeout(1.0)  # 1s timeout so reconnect loop can check mav_stop_event
+        sock.bind(('0.0.0.0', local_port))
+
+        # Wait for first packet from drone (like MP: while BytesToRead==0)
+        remote_addr = None
+        while remote_addr is None:
+            if mav_stop_event.is_set():
+                sock.close()
+                raise Exception("Cancelled")
+            try:
+                data, addr = sock.recvfrom(280)
+                remote_addr = addr
+                print(f"MAVLink UDPCI: drone found at {addr[0]}:{addr[1]}")
+            except _socket.timeout:
+                continue
+
+        # Switch to non-blocking after we know who the drone is
+        sock.settimeout(5.0)  # recv timeout for heartbeat detection
+
+        # Build mavudp server-style: knows remote endpoint
+        conn = mavutil.mavudp.__new__(mavutil.mavudp)
+        conn.port = sock
+        conn.udp_server = True
+        conn.broadcast = False
+        conn.destination_addr = remote_addr
+        conn.resolved_destination_addr = remote_addr[0]
+        conn.last_address = remote_addr
+        conn.timeout = 0
+        conn.clients = set([remote_addr])
+        conn.clients_last_alive = {remote_addr: time.time()}
+        mavutil.mavfile.__init__(conn, sock.fileno(),
+                                 f'udpin:{remote_addr[0]}:{remote_addr[1]}',
+                                 source_system=255, source_component=0,
+                                 input=False)
+        # Feed first packet into mavlink parser
+        conn.mav.parse_buffer(data)
+        return conn
+
+    elif cs.startswith('udpout:') or cs.startswith('udp:'):
         parts = cs.split(':', 2)
         host = parts[1].lstrip('/')
         port = int(parts[2])
 
-        # Create UDP socket the Windows-safe way:
-        # connect() first (while blocking), THEN hand to pymavlink
         sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
         sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
         sock.bind(('', 0))
-        # connect() on UDP just sets default dest — works on Windows while blocking
         sock.connect((host, port))
-        # Now set non-blocking (pymavlink expects this)
         sock.setblocking(False)
 
-        # Build mavudp manually, bypass __init__ socket creation
         conn = mavutil.mavudp.__new__(mavutil.mavudp)
         conn.port = sock
         conn.udp_server = False
@@ -154,17 +200,13 @@ def make_connection(cs):
         conn.timeout = 0
         conn.clients = set()
         conn.clients_last_alive = {}
-        # Init mavfile base class
         mavutil.mavfile.__init__(conn, sock.fileno(), f'{host}:{port}',
                                  source_system=255, source_component=0,
                                  input=False)
         return conn
 
-    elif cs.startswith('udpin:'):
-        return mavutil.mavlink_connection(cs, source_system=255, source_component=0)
-
     else:
-        # TCP, serial — use directly
+        # TCP, serial, bluetooth
         return mavutil.mavlink_connection(cs, source_system=255, source_component=0)
 
 
@@ -187,10 +229,14 @@ def connect_mavlink(connection_string=None):
         conn = None
         try:
             conn = make_connection(cs)
-            print("Waiting for heartbeat...")
-            conn.wait_heartbeat(timeout=30)
+            # For UDPCI: make_connection already waited for first packet from drone.
+            # For udpout/TCP: still need to wait for heartbeat.
+            if not cs.startswith('udpin:'):
+                print("Waiting for heartbeat...")
+                conn.wait_heartbeat(timeout=30)
             print(f"MAVLink connected: sys={conn.target_system} comp={conn.target_component}")
 
+            # Request all telemetry streams at 10Hz (like Mission Planner)
             conn.mav.request_data_stream_send(
                 conn.target_system, conn.target_component,
                 mavutil.mavlink.MAV_DATA_STREAM_ALL, 10, 1
@@ -830,10 +876,6 @@ def video_capture_loop():
                 cap.set(cv2.CAP_PROP_FPS, 30)
                 print("Video: connected")
                 socketio.emit('video_status', {'connected': True, 'error': None, 'w': frame_w, 'h': frame_h})
-                fps = cap.get(cv2.CAP_PROP_FPS) or 30
-                frame_delay = 1.0 / fps
-                last_frame_time = time.time()
-
                 consecutive_fails = 0
                 while video_running and video_active:
                     ret, frame = cap.read()
@@ -842,16 +884,9 @@ def video_capture_loop():
                         if consecutive_fails > 10:
                             print("Video: stream lost, reconnecting...")
                             break
-                        time.sleep(0.05)
+                        time.sleep(0.005)
                         continue
                     consecutive_fails = 0
-
-                    # FPS throttle
-                    now = time.time()
-                    elapsed = now - last_frame_time
-                    if elapsed < frame_delay:
-                        time.sleep(frame_delay - elapsed)
-                    last_frame_time = time.time()
                     h, w = frame.shape[:2]
                     if w != frame_w or h != frame_h:
                         frame_w, frame_h = w, h
@@ -879,7 +914,7 @@ def video_capture_loop():
                         raw_frame = frame.copy()
                         raw_frame_event.set()  # signal that a frame is available
 
-                    _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 60])
                     with video_lock:
                         video_frame = jpeg.tobytes()
 
@@ -903,14 +938,16 @@ def video_capture_loop():
 
 
 def gen_frames():
+    """Push frames as fast as they arrive — no artificial sleep."""
+    last_sent = None
     while True:
         with video_lock:
             frame = video_frame
-        if frame:
+        if frame and frame is not last_sent:
+            last_sent = frame
             yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
         else:
-            time.sleep(0.05)
-        time.sleep(0.033)  # ~30fps cap
+            time.sleep(0.005)  # 5ms poll — don't burn CPU but stay fast
 
 
 @app.route('/video')
