@@ -100,6 +100,17 @@
   #bat-bar-wrap { width: 80px; height: 8px; background: #333; border-radius: 3px; margin-top: 4px; margin-left: auto; }
   #bat-bar { height: 100%; border-radius: 3px; background: var(--green); transition: width 0.5s; }
 
+  #osd-radio {
+    top: 72px; right: 14px;
+    text-align: right;
+    font-size: 0.78rem;
+    min-width: 110px;
+  }
+  #osd-radio .radio-label { color: #aaa; font-size: 0.62rem; display: block; letter-spacing: 0.05em; }
+  #osd-radio .radio-dbm  { font-size: 0.95rem; font-weight: bold; }
+  #osd-radio .radio-bar-wrap { width: 80px; height: 5px; background: #333; border-radius: 3px; margin-top: 3px; margin-left: auto; }
+  #osd-radio .radio-bar  { height: 100%; border-radius: 3px; transition: width 0.4s, background 0.4s; }
+
   /* ── MIDDLE ROW ── */
   #osd-horizon {
     top: 50%; left: 14px;
@@ -466,6 +477,14 @@
   <div id="osd-battery" class="osd-el">
     <span id="batVoltage">--.- V</span>&nbsp;<span id="batPct">---%</span>
     <div id="bat-bar-wrap"><div id="bat-bar" style="width:0%"></div></div>
+  </div>
+
+  <!-- RADIO LINK QUALITY -->
+  <div id="osd-radio" class="osd-el">
+    <span class="radio-label">📡 LINK</span>
+    <span class="radio-dbm" id="radioDbm">--- dBm</span>
+    <div class="radio-bar-wrap"><div class="radio-bar" id="radioBar" style="width:0%;background:#27ae60;"></div></div>
+    <span style="color:#666;font-size:0.6rem;" id="radioSub"></span>
   </div>
 
   <!-- GUIDE BUTTON -->
@@ -905,6 +924,40 @@ function updateOSD(d) {
   const bar = document.getElementById('bat-bar');
   bar.style.width = pct + '%';
   bar.style.background = pct > 40 ? '#BED600' : pct > 20 ? '#f39c12' : '#e74c3c';
+
+  // Radio link quality
+  const radioDbmEl  = document.getElementById('radioDbm');
+  const radioBarEl  = document.getElementById('radioBar');
+  const radioSubEl  = document.getElementById('radioSub');
+  if (d.rssi_dbm !== null && d.rssi_dbm !== undefined) {
+    const dbm = d.rssi_dbm;
+    radioDbmEl.textContent = dbm + ' dBm';
+    // Map dBm range: -100 (very weak) to -40 (excellent)
+    const linkPct = Math.max(0, Math.min(100, Math.round((dbm + 100) / 60 * 100)));
+    radioBarEl.style.width = linkPct + '%';
+    radioBarEl.style.background = dbm >= -65 ? '#27ae60' : dbm >= -80 ? '#f39c12' : '#e74c3c';
+    radioDbmEl.style.color      = dbm >= -65 ? '#27ae60' : dbm >= -80 ? '#f39c12' : '#e74c3c';
+    // Sub info: remrssi + rxerrors
+    let sub = '';
+    if (d.remrssi_dbm !== null && d.remrssi_dbm !== undefined)
+      sub += 'REM ' + d.remrssi_dbm + ' dBm';
+    if (d.rxerrors)
+      sub += (sub ? '  ' : '') + 'ERR ' + d.rxerrors;
+    radioSubEl.textContent = sub;
+  } else if (d.rssi !== null && d.rssi !== undefined && d.rssi !== 255) {
+    // Raw RSSI (no dBm conversion available)
+    const rawPct = Math.round(d.rssi / 254 * 100);
+    radioDbmEl.textContent = rawPct + '%';
+    radioBarEl.style.width = rawPct + '%';
+    radioBarEl.style.background = rawPct > 60 ? '#27ae60' : rawPct > 30 ? '#f39c12' : '#e74c3c';
+    radioDbmEl.style.color      = rawPct > 60 ? '#27ae60' : rawPct > 30 ? '#f39c12' : '#e74c3c';
+    radioSubEl.textContent = d.radio_source || '';
+  } else {
+    radioDbmEl.textContent = '--- dBm';
+    radioDbmEl.style.color = '#555';
+    radioBarEl.style.width = '0%';
+    radioSubEl.textContent = 'NO DATA';
+  }
 
   // Throttle bar
   const thr = Math.min(100, Math.max(0, d.throttle || 0));

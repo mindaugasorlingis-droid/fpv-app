@@ -81,6 +81,14 @@ telemetry = {
     'lat': 0.0,
     'lon': 0.0,
     'throttle': 0,
+    # Radio link quality (RADIO_STATUS / RC_CHANNELS RSSI)
+    'rssi': None,        # local RSSI raw (0-254)
+    'remrssi': None,     # remote RSSI raw (0-254)
+    'rssi_dbm': None,    # local RSSI dBm (converted)
+    'remrssi_dbm': None, # remote RSSI dBm
+    'rxerrors': None,    # packet errors
+    'noise': None,       # noise floor raw
+    'radio_source': None,# 'RADIO_STATUS' or 'RC_CHANNELS'
 }
 
 gps_disabled = False
@@ -519,6 +527,27 @@ def _handle_mavlink_msg(msg, conn):
     elif msg_type == 'SYS_STATUS':
         telemetry['battery_voltage']   = msg.voltage_battery / 1000.0
         telemetry['battery_remaining'] = msg.battery_remaining
+    elif msg_type == 'RADIO_STATUS':
+        # SIYI / SiK radio link quality
+        # MAVLink RADIO_STATUS rssi: 0=no signal, 254=max, 255=unknown
+        # SiK radios: dBm = rssi / 1.9 - 127 (approximately)
+        # SIYI airunit reports raw RSSI; conversion: dBm ≈ (rssi - 256) if rssi > 127 else rssi
+        def raw_to_dbm(raw):
+            if raw is None or raw == 255:
+                return None
+            # Standard SiK/SIYI conversion: rssi_dbm = raw - 256 (signed byte interpretation)
+            if raw > 127:
+                return raw - 256
+            return raw
+        rssi_raw   = getattr(msg, 'rssi', 255)
+        remrssi_raw= getattr(msg, 'remrssi', 255)
+        telemetry['rssi']       = rssi_raw
+        telemetry['remrssi']    = remrssi_raw
+        telemetry['rssi_dbm']   = raw_to_dbm(rssi_raw)
+        telemetry['remrssi_dbm']= raw_to_dbm(remrssi_raw)
+        telemetry['rxerrors']   = getattr(msg, 'rxerrors', 0)
+        telemetry['noise']      = getattr(msg, 'noise', 0)
+        telemetry['radio_source'] = 'RADIO_STATUS'
     elif msg_type == 'HEARTBEAT':
         armed = bool(msg.base_mode & mavutil.mavlink.MAV_MODE_FLAG_SAFETY_ARMED)
         telemetry['armed'] = armed
@@ -536,6 +565,15 @@ def _handle_mavlink_msg(msg, conn):
     elif msg_type == 'EKF_STATUS_REPORT':
         socketio.emit('ekf_status', {'flags': msg.flags})
     elif msg_type == 'RC_CHANNELS':
+        # RSSI fallback — use only if RADIO_STATUS not already providing data
+        if telemetry.get('radio_source') != 'RADIO_STATUS':
+            rc_rssi = getattr(msg, 'rssi', 255)
+            if rc_rssi != 255:
+                # RC_CHANNELS RSSI: 0-254, 255=unknown. Scale to dBm approx.
+                # ArduPilot maps 0-254 → roughly -120..-20 dBm
+                telemetry['rssi']     = rc_rssi
+                telemetry['rssi_dbm'] = round(-120 + (rc_rssi / 254.0) * 100) if rc_rssi < 255 else None
+                telemetry['radio_source'] = 'RC_CHANNELS'
         if guide_active:
             RC_DEADZONE = 100
             ch1 = getattr(msg, 'chan1_raw', 1500)
@@ -862,11 +900,26 @@ def api_disable_gps():
     if not conn:
         return jsonify({'error': 'MAVLink not connected'}), 503
     gps_disabled = not gps_disabled
-    value = 0 if gps_disabled else 1
+
+    # ArduPlane 4.1+: GPS_TYPE=0 disables GPS driver entirely
+    # ArduPlane <4.1: AHRS_GPS_USE=0 disables GPS fusion
+    # We send both to cover all versions
+    results = {}
+    errors = []
     try:
-        conn.param_set_send('AHRS_GPS_USE', value, mavutil.mavlink.MAV_PARAM_TYPE_INT8)
-        return jsonify({'ok': True, 'gps_disabled': gps_disabled, 'AHRS_GPS_USE': value})
+        if gps_disabled:
+            # Disable GPS: GPS_TYPE=0 (no GPS), AHRS_GPS_USE=0
+            conn.param_set_send('GPS_TYPE',    0, mavutil.mavlink.MAV_PARAM_TYPE_INT8)
+            conn.param_set_send('AHRS_GPS_USE', 0, mavutil.mavlink.MAV_PARAM_TYPE_INT8)
+            results = {'GPS_TYPE': 0, 'AHRS_GPS_USE': 0}
+        else:
+            # Re-enable GPS: GPS_TYPE=1 (auto), AHRS_GPS_USE=1
+            conn.param_set_send('GPS_TYPE',    1, mavutil.mavlink.MAV_PARAM_TYPE_INT8)
+            conn.param_set_send('AHRS_GPS_USE', 1, mavutil.mavlink.MAV_PARAM_TYPE_INT8)
+            results = {'GPS_TYPE': 1, 'AHRS_GPS_USE': 1}
+        return jsonify({'ok': True, 'gps_disabled': gps_disabled, 'params': results})
     except Exception as e:
+        gps_disabled = not gps_disabled  # rollback toggle
         return jsonify({'error': str(e)}), 500
 
 
